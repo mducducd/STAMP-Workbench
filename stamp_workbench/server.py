@@ -3,16 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
-import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from workbench.service import (
+from .service import (
     RunManager,
     TerminalManager,
     bootstrap_payload,
@@ -222,21 +218,23 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         return [segment for segment in path.split("/") if segment]
 
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the STAMP workbench server.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8010)
-    args = parser.parse_args()
-
-    server = ThreadingHTTPServer((args.host, args.port), WorkbenchHandler)
-    print(f"STAMP workbench running at http://{args.host}:{args.port}", flush=True)
+def serve(*, host: str = "127.0.0.1", port: int = 8010) -> None:
+    server = ThreadingHTTPServer((host, port), WorkbenchHandler)
+    print(f"STAMP workbench running at http://{host}:{port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run the STAMP workbench server.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8010)
+    args = parser.parse_args(argv)
+    serve(host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

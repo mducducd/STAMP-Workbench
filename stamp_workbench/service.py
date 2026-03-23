@@ -19,9 +19,14 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
-from workbench.catalog import TASK_CATALOG, TASK_COMMANDS, catalog_payload, default_advanced_config
+from .catalog import (
+    TASK_CATALOG,
+    TASK_COMMANDS,
+    catalog_payload,
+    default_advanced_config,
+)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(os.environ.get("STAMP_WORKBENCH_ROOT", str(Path.cwd()))).expanduser().resolve()
 MAX_LOG_LINES = 2000
 MAX_TERMINAL_LINES = 600
 ALLOWED_SHELL_COMMANDS = {
