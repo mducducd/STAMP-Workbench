@@ -1,0 +1,49 @@
+[project]
+name = "stamp-workbench"
+version = "0.1.0"
+description = "Browser-based pipeline composer and run monitor for STAMP workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+
+# stamp is the runtime back-end; fastapi + uvicorn power the HTTP layer.
+# When stamp-workbench is published to PyPI, replace the git URL with
+# the plain package name: stamp>=2.5.0
+dependencies = [
+    # stamp is NOT listed here — it is already the host project when installed
+    # via `uv sync --extra stamp-workbench` inside a STAMP clone.
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pandas>=2.0.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+# After install, two usage modes:
+#
+#   1. Inject + run directly:
+#        stamp-workbench inject           (copies workbench/ into current dir)
+#        stamp-workbench inject /my/stamp (copies into /my/stamp/workbench/)
+#        python workbench/server.py       (run from your STAMP clone root)
+#
+#   2. Run directly without inject:
+#        stamp-workbench                          (serve on 127.0.0.1:8010)
+#        stamp-workbench serve --host 0.0.0.0 --port 8010
+#
+"stamp-workbench" = "workbench.server:main"
+
+[project.urls]
+"Homepage" = "https://github.com/KatherLab/stamp-workbench"
+"Bug Tracker" = "https://github.com/KatherLab/stamp-workbench/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+# Hatch includes everything under the workbench/ directory by default.
+# Adjust the package root so imports stay as  `from workbench.xxx import ...`
+[tool.hatch.build.targets.wheel]
+packages = ["workbench"]
