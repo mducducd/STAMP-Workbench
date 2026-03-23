@@ -26,6 +26,8 @@ from .catalog import (
     default_advanced_config,
 )
 
+# The workbench should operate on the STAMP checkout the user launched it from,
+# not on the installed package location inside site-packages.
 REPO_ROOT = Path(os.environ.get("STAMP_WORKBENCH_ROOT", str(Path.cwd()))).expanduser().resolve()
 MAX_LOG_LINES = 2000
 MAX_TERMINAL_LINES = 600

@@ -6,25 +6,33 @@
 
 ## Requirements
 
-- A cloned and installed [STAMP](https://github.com/KatherLab/STAMP) environment
-- A STAMP branch that already exposes the `stamp workbench` command
+- [STAMP](https://github.com/KatherLab/STAMP) installed (≥ v2.5.0)
 - Python ≥ 3.11
 
 ---
 
 ## Installation
 
-Inside your STAMP clone:
+**1. Install STAMP** (if not already done):
 
 ```bash
-uv sync
+git clone https://github.com/KatherLab/STAMP.git
+cd STAMP
+uv sync --extra gpu          # or --extra cpu for CPU-only
+```
+
+**2. Add the workbench** to the same environment:
+
+```bash
 uv pip install git+https://github.com/mducducd/STAMP-Workbench.git
 ```
 
-After the package is installed, launch the app through STAMP:
+**3. Launch:**
 
 ```bash
-stamp workbench --host 127.0.0.1 --port 8010
+stamp workbench
+# or with custom host/port:
+stamp workbench --host 0.0.0.0 --port 8010
 ```
 
 Then open the printed URL in your browser.
