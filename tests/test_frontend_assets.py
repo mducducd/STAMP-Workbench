@@ -32,3 +32,9 @@ def test_mobile_reorder_controls_are_present_in_assets():
 def test_imported_advanced_config_is_merged_with_catalog_defaults():
     assert "function mergeDeep(base, override)" in APP_JS
     assert "state.advancedConfig = mergeDeep(" in APP_JS
+
+
+def test_run_button_uses_local_missing_input_checks_instead_of_validate_endpoint():
+    assert '"/api/validate"' not in APP_JS
+    assert "collectMissingInputErrors" in APP_JS
+    assert "Fill the missing required inputs before running." in APP_JS

@@ -19,7 +19,6 @@ from .service import (
     inspect_table,
     list_directory,
     set_repo_root,
-    validate_payload_dict,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -85,12 +84,6 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         segments = self._segments(parsed.path)
         body = self._read_json_body(allow_empty=True)
-
-        if parsed.path == "/api/validate":
-            result = validate_payload_dict(body or {})
-            status = HTTPStatus.OK if result["valid"] else HTTPStatus.BAD_REQUEST
-            self._send_json(result, status=status)
-            return
 
         if parsed.path == "/api/runs":
             try:

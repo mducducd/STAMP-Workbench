@@ -1163,6 +1163,43 @@ function validateBlockLocally(task, block) {
   };
 }
 
+function collectMissingInputErrors(blocks) {
+  const errors = [];
+  let firstInvalidBlockId = null;
+
+  for (const block of blocks) {
+    const task = state.catalog.tasks[block.section];
+    const health = validateBlockLocally(task, block);
+    if (health.ready) {
+      continue;
+    }
+
+    const index = state.blocks.findIndex((candidate) => candidate.id === block.id);
+    const label = index === -1 ? task.title : `Cell ${index + 1} (${task.title})`;
+    errors.push(`${label} is missing: ${health.missing.join(", ")}`);
+    if (!firstInvalidBlockId) {
+      firstInvalidBlockId = block.id;
+    }
+  }
+
+  return { errors, firstInvalidBlockId };
+}
+
+function showMissingInputAlert(errors, firstInvalidBlockId) {
+  state.validation = {
+    valid: false,
+    errors,
+    warnings: [],
+    config_preview: state.validation?.config_preview || "",
+  };
+  if (firstInvalidBlockId) {
+    state.selectedBlockId = firstInvalidBlockId;
+  }
+  renderPipeline();
+  renderInspector();
+  setTerminalMessage(`[workbench] Fill the missing required inputs before running.\n${errors.join("\n")}`);
+}
+
 function renderInspector() {
   const block = selectedBlock();
   replaceChildren(elements.blockInspector);
@@ -2111,38 +2148,15 @@ function createDropSlot(index, isEmpty = false) {
   return slot;
 }
 
-async function validatePipeline() {
-  setTerminalMessage("[workbench] Validating pipeline...");
-  try {
-    state.validation = await request("/api/validate", {
-      method: "POST",
-      body: JSON.stringify(pipelinePayload()),
-    });
-  } catch (error) {
-    state.validation = error.payload || {
-      valid: false,
-      errors: [error.message],
-      warnings: [],
-      config_preview: "",
-    };
-  }
-  if (!state.validation?.valid) {
-    const errors = state.validation?.errors?.length ? state.validation.errors.join("\n") : "Validation failed.";
-    setTerminalMessage(`[workbench] Validation failed.\n${errors}`);
-  } else {
-    const warnings = state.validation?.warnings?.length
-      ? `\n[workbench] Warnings:\n${state.validation.warnings.join("\n")}`
-      : "";
-    setTerminalMessage(`[workbench] Validation passed. Ready to start.${warnings}`);
-  }
-  return Boolean(state.validation?.valid);
-}
-
 async function runPipeline() {
-  const isValid = await validatePipeline();
-  if (!isValid) {
+  const { errors, firstInvalidBlockId } = collectMissingInputErrors(
+    state.blocks.filter((block) => block.enabled),
+  );
+  if (errors.length) {
+    showMissingInputAlert(errors, firstInvalidBlockId);
     return;
   }
+  state.validation = null;
   setTerminalMessage("[workbench] Creating run...");
   try {
     const run = await request("/api/runs", {
@@ -2191,11 +2205,18 @@ async function runSingleBlock(block) {
     return;
   }
 
+  const blockCheck = collectMissingInputErrors([block]);
+  if (blockCheck.errors.length) {
+    showMissingInputAlert(blockCheck.errors, block.id);
+    return;
+  }
+
+  state.validation = null;
   state.transientRunningBlockId = block.id;
   block.ui = block.ui || {};
   block.ui.showRuntime = true;
   renderPipeline();
-  setTerminalMessage(`[workbench] Validating ${task.title} cell...`);
+  setTerminalMessage(`[workbench] Starting ${task.title} cell...`);
   try {
     const run = await request("/api/runs", {
       method: "POST",
