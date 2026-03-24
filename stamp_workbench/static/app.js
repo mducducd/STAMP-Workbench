@@ -13,8 +13,11 @@ const state = {
   terminalMessageTimer: null,
   terminal: { cwd: "", history: [] },
   pollingHandle: null,
+  pollingEnabled: false,
+  runRefreshLock: null,
   draggedTaskSection: null,
   draggedBlockId: null,
+  saveModalRestoreFocus: null,
 };
 
 const elements = {
@@ -167,6 +170,17 @@ function makeId() {
   return window.crypto?.randomUUID?.() || `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function replaceChildren(element, ...nodes) {
+  element.replaceChildren(...nodes.filter(Boolean));
+}
+
+function createMessageCard(text, tone = "info") {
+  const card = document.createElement("div");
+  card.className = `message-card ${tone}`;
+  card.textContent = String(text || "");
+  return card;
+}
+
 async function request(path, options = {}) {
   const response = await fetch(path, {
     headers: {
@@ -191,6 +205,31 @@ async function request(path, options = {}) {
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeDeep(base, override) {
+  if (!isPlainObject(base)) {
+    return deepClone(override);
+  }
+
+  const result = deepClone(base);
+  if (!isPlainObject(override)) {
+    return result;
+  }
+
+  for (const [key, value] of Object.entries(override)) {
+    if (isPlainObject(value) && isPlainObject(result[key])) {
+      result[key] = mergeDeep(result[key], value);
+    } else {
+      result[key] = deepClone(value);
+    }
+  }
+
+  return result;
 }
 
 function defaultParamsFor(section) {
@@ -862,7 +901,7 @@ function renderTopbar() {
 }
 
 function renderTaskPalette() {
-  elements.taskPalette.innerHTML = "";
+  replaceChildren(elements.taskPalette);
   for (const [section, task] of Object.entries(state.catalog.tasks)) {
     const meta = TASK_META[section] || { icon: "◆", color: "#97aabd" };
     const card = document.createElement("article");
@@ -914,7 +953,7 @@ function renderTaskPalette() {
 }
 
 function renderTemplates() {
-  elements.templateList.innerHTML = "";
+  replaceChildren(elements.templateList);
   for (const template of state.catalog.templates) {
     const card = document.createElement("article");
     card.className = "template-card";
@@ -946,7 +985,7 @@ function renderAdvancedConfig() {
   if (forceBarspoon) {
     state.advancedConfig.model_name = "barspoon";
   }
-  elements.advancedConfig.innerHTML = "";
+  replaceChildren(elements.advancedConfig);
   const grouped = groupFields(state.catalog.advanced_fields, ADVANCED_PANEL_DEFS);
   for (const panel of grouped) {
     const body = document.createElement("div");
@@ -1007,7 +1046,7 @@ function renderAdvancedConfig() {
 }
 
 function renderWorkspaceSummary() {
-  elements.workspaceSummary.innerHTML = "";
+  replaceChildren(elements.workspaceSummary);
   if (state.blocks.length === 0) {
     return;
   }
@@ -1026,12 +1065,12 @@ function renderWorkspaceMessage() {
   const shouldHide = !text || text === "No run selected." || text === "No run started yet.";
   elements.workspaceMessage.hidden = shouldHide;
   if (shouldHide) {
-    elements.workspaceMessage.innerHTML = "";
+    replaceChildren(elements.workspaceMessage);
     return;
   }
 
   const { tone } = terminalMessageMeta(text);
-  elements.workspaceMessage.innerHTML = `<div class="message-card ${tone}">${text.replaceAll("\n", "<br>")}</div>`;
+  replaceChildren(elements.workspaceMessage, createMessageCard(text, tone));
 }
 
 function hasDisplayValue(field, value) {
@@ -1126,7 +1165,7 @@ function validateBlockLocally(task, block) {
 
 function renderInspector() {
   const block = selectedBlock();
-  elements.blockInspector.innerHTML = "";
+  replaceChildren(elements.blockInspector);
 
   if (!block) {
     elements.inspectorSelection.textContent = "No cell selected";
@@ -1241,7 +1280,7 @@ function renderInspector() {
 
 function renderPipeline() {
   renderWorkspaceSummary();
-  elements.pipelineCanvas.innerHTML = "";
+  replaceChildren(elements.pipelineCanvas);
 
   if (state.blocks.length === 0) {
     elements.pipelineCanvas.append(createDropSlot(0, true));
@@ -1416,7 +1455,31 @@ function renderPipeline() {
       removeBlock(block.id);
     });
 
-    headActions.append(enableLabel, removeButton);
+    const moveUpButton = document.createElement("button");
+    moveUpButton.type = "button";
+    moveUpButton.className = "ghost cell-order-button";
+    moveUpButton.setAttribute("aria-label", `Move ${task.title} cell up`);
+    moveUpButton.title = "Move cell up";
+    moveUpButton.textContent = "↑";
+    moveUpButton.disabled = index === 0;
+    moveUpButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      moveBlock(index, index - 1);
+    });
+
+    const moveDownButton = document.createElement("button");
+    moveDownButton.type = "button";
+    moveDownButton.className = "ghost cell-order-button";
+    moveDownButton.setAttribute("aria-label", `Move ${task.title} cell down`);
+    moveDownButton.title = "Move cell down";
+    moveDownButton.textContent = "↓";
+    moveDownButton.disabled = index === state.blocks.length - 1;
+    moveDownButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      moveBlock(index, index + 1);
+    });
+
+    headActions.append(enableLabel, moveUpButton, moveDownButton, removeButton);
     head.append(headLead, headActions);
     main.append(head);
     main.append(renderBlockSummary(task, block));
@@ -1452,11 +1515,13 @@ function renderRunPanel() {
   elements.runPill.className = `pill ${runPillClass(run?.status || "idle")}`;
   elements.runPill.textContent = run?.status || "Idle";
 
-  elements.runList.innerHTML = "";
+  replaceChildren(elements.runList);
   if (state.runs.length === 0) {
     const empty = document.createElement("div");
     empty.className = "workspace-empty";
-    empty.innerHTML = "<p>No runs yet.</p>";
+    const text = document.createElement("p");
+    text.textContent = "No runs yet.";
+    empty.append(text);
     elements.runList.append(empty);
   } else {
     for (const entry of state.runs) {
@@ -1465,7 +1530,7 @@ function renderRunPanel() {
       card.className = "run-card";
       card.addEventListener("click", async () => {
         state.activeRunId = entry.run_id;
-        await refreshActiveRun();
+        await refreshRunState();
       });
 
       const top = document.createElement("div");
@@ -1674,6 +1739,74 @@ function setSaveModalMessage(message = "", tone = "muted") {
   elements.saveModalMessage.textContent = message;
 }
 
+function focusableNodes(container) {
+  return Array.from(
+    container.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((node) => {
+    return !node.hidden && node.getAttribute("aria-hidden") !== "true";
+  });
+}
+
+function setBackgroundInteractivity(disabled) {
+  Array.from(document.body.children)
+    .filter((node) => node instanceof HTMLElement && node !== elements.saveModal)
+    .forEach((node) => {
+      node.inert = disabled;
+      if (disabled) {
+        node.setAttribute("aria-hidden", "true");
+      } else {
+        node.removeAttribute("aria-hidden");
+      }
+    });
+}
+
+function trapSaveModalFocus(event) {
+  const nodes = focusableNodes(elements.saveModal);
+  if (nodes.length === 0) {
+    event.preventDefault();
+    elements.saveModal.focus();
+    return;
+  }
+
+  const first = nodes[0];
+  const last = nodes[nodes.length - 1];
+  const active = document.activeElement;
+
+  if (event.shiftKey && (active === first || active === elements.saveModal)) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function setSaveModalOpen(isOpen) {
+  if (isOpen) {
+    state.saveModalRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    elements.saveModal.hidden = false;
+    elements.saveModal.tabIndex = -1;
+    setBackgroundInteractivity(true);
+    window.requestAnimationFrame(() => {
+      const target = focusableNodes(elements.saveModal)[0] || elements.saveModal;
+      target.focus();
+    });
+    return;
+  }
+
+  elements.saveModal.hidden = true;
+  setBackgroundInteractivity(false);
+  setSaveModalMessage("");
+  const restoreTarget = state.saveModalRestoreFocus;
+  state.saveModalRestoreFocus = null;
+  restoreTarget?.focus();
+}
+
 function openSaveModal() {
   const candidates = saveCandidates();
   if (candidates.length === 0) {
@@ -1681,7 +1814,7 @@ function openSaveModal() {
     return;
   }
 
-  elements.saveSectionList.innerHTML = "";
+  replaceChildren(elements.saveSectionList);
   const seenCheckedSections = new Set();
   for (const candidate of candidates) {
     const label = document.createElement("label");
@@ -1744,12 +1877,11 @@ function openSaveModal() {
     elements.saveOutputDir.value = state.catalog.environment.cwd;
   }
   setSaveModalMessage("");
-  elements.saveModal.hidden = false;
+  setSaveModalOpen(true);
 }
 
 function closeSaveModal() {
-  elements.saveModal.hidden = true;
-  setSaveModalMessage("");
+  setSaveModalOpen(false);
 }
 
 async function saveConfigFile() {
@@ -1817,7 +1949,10 @@ async function loadConfigFile(file) {
       },
     }));
     state.selectedBlockId = state.blocks[0]?.id || null;
-    state.advancedConfig = deepClone(payload.advanced_config || state.catalog.advanced_defaults);
+    state.advancedConfig = mergeDeep(
+      state.catalog.advanced_defaults,
+      payload.advanced_config || {},
+    );
     state.validation = null;
     renderAll();
 
@@ -1831,6 +1966,7 @@ async function loadConfigFile(file) {
 }
 
 function openConfigPicker() {
+  elements.configFileInput.value = "";
   elements.configFileInput.click();
 }
 
@@ -2021,8 +2157,7 @@ async function runPipeline() {
       }
     });
     setTerminalMessage(`[workbench] Run ${run.run_id} created. Waiting for stage output...`);
-    await refreshRuns();
-    await refreshActiveRun();
+    await refreshRunState();
   } catch (error) {
     state.validation = {
       valid: false,
@@ -2047,8 +2182,7 @@ async function runSingleBlock(block) {
         body: JSON.stringify({}),
       });
       state.transientRunningBlockId = null;
-      await refreshRuns();
-      await refreshActiveRun();
+      await refreshRunState();
     } catch (error) {
       state.transientRunningBlockId = null;
       renderPipeline();
@@ -2080,8 +2214,7 @@ async function runSingleBlock(block) {
     });
     state.activeRunId = run.run_id;
     setTerminalMessage(`[workbench] ${task.title} cell started. Waiting for stage output...`);
-    await refreshRuns();
-    await refreshActiveRun();
+    await refreshRunState();
   } catch (error) {
     state.transientRunningBlockId = null;
     renderPipeline();
@@ -2097,8 +2230,7 @@ async function startRun() {
         method: "POST",
         body: JSON.stringify({}),
       });
-      await refreshRuns();
-      await refreshActiveRun();
+      await refreshRunState();
       return;
     } catch (error) {
       state.validation = {
@@ -2124,8 +2256,7 @@ async function stopRun() {
       method: "POST",
       body: JSON.stringify({}),
     });
-    await refreshRuns();
-    await refreshActiveRun();
+    await refreshRunState();
   } catch (error) {
     state.validation = { valid: false, errors: [error.message], warnings: [], config_preview: "" };
     setTerminalMessage(`[workbench] Failed to stop run.\n${state.validation.errors.join("\n")}`);
@@ -2141,8 +2272,7 @@ async function terminateRun() {
       method: "POST",
       body: JSON.stringify({}),
     });
-    await refreshRuns();
-    await refreshActiveRun();
+    await refreshRunState();
   } catch (error) {
     state.validation = { valid: false, errors: [error.message], warnings: [], config_preview: "" };
     setTerminalMessage(`[workbench] Failed to terminate run.\n${state.validation.errors.join("\n")}`);
@@ -2157,54 +2287,74 @@ async function handleRunAllButton() {
   await startRun();
 }
 
-async function refreshRuns() {
-  const payload = await request("/api/runs");
-  state.runs = payload.runs;
-  const activeRunning = state.runs.find((run) => isRunnableRunStatus(run.status));
-  if (!state.activeRunId) {
-    state.activeRunId = activeRunning?.run_id || null;
-  } else if (!state.runs.some((run) => run.run_id === state.activeRunId)) {
-    state.activeRunId = activeRunning?.run_id || null;
-  }
+function queueRunRefresh(task) {
+  const previous = state.runRefreshLock || Promise.resolve();
+  const next = previous.catch(() => {}).then(task);
+  state.runRefreshLock = next;
+  return next;
 }
 
-async function refreshActiveRun() {
-  if (!state.activeRunId) {
-    state.activeRun = null;
-    state.transientRunningBlockId = null;
+async function refreshRunState() {
+  return queueRunRefresh(async () => {
+    const payload = await request("/api/runs");
+    const runs = payload.runs || [];
+    const activeRunning = runs.find((run) => isRunnableRunStatus(run.status));
+    let nextActiveRunId = state.activeRunId;
+    if (!nextActiveRunId) {
+      nextActiveRunId = activeRunning?.run_id || null;
+    } else if (!runs.some((run) => run.run_id === nextActiveRunId)) {
+      nextActiveRunId = activeRunning?.run_id || null;
+    }
+
+    let nextActiveRun = null;
+    if (nextActiveRunId) {
+      try {
+        nextActiveRun = await request(`/api/runs/${nextActiveRunId}`);
+      } catch (_error) {
+        nextActiveRun = null;
+      }
+    }
+
+    state.runs = runs;
+    state.activeRunId = nextActiveRunId;
+    state.activeRun = nextActiveRun;
+    syncRuntimeVisibilityFromRun();
+    if (!state.activeRun || !isRunnableRunStatus(state.activeRun.status)) {
+      state.transientRunningBlockId = null;
+    }
     renderRunPanel();
     renderPipeline();
-    return;
-  }
-  try {
-    state.activeRun = await request(`/api/runs/${state.activeRunId}`);
-  } catch (_error) {
-    state.activeRun = null;
-  }
-  syncRuntimeVisibilityFromRun();
-  if (!state.activeRun || !isRunnableRunStatus(state.activeRun.status)) {
-    state.transientRunningBlockId = null;
-  }
-  renderRunPanel();
-  renderPipeline();
+  });
 }
 
 function startPolling() {
   if (state.pollingHandle) {
-    window.clearInterval(state.pollingHandle);
+    window.clearTimeout(state.pollingHandle);
   }
-  state.pollingHandle = window.setInterval(async () => {
+  state.pollingEnabled = true;
+
+  const poll = async () => {
+    state.pollingHandle = null;
     try {
-      await refreshRuns();
-      if (state.activeRunId) {
-        await refreshActiveRun();
-      } else {
-        renderRunPanel();
-      }
+      await refreshRunState();
     } catch (_error) {
       // Keep the current UI state if polling fails.
+    } finally {
+      if (state.pollingEnabled) {
+        state.pollingHandle = window.setTimeout(poll, 1500);
+      }
     }
-  }, 1500);
+  };
+
+  state.pollingHandle = window.setTimeout(poll, 1500);
+}
+
+function stopPolling() {
+  state.pollingEnabled = false;
+  if (state.pollingHandle) {
+    window.clearTimeout(state.pollingHandle);
+    state.pollingHandle = null;
+  }
 }
 
 function wireEvents() {
@@ -2218,8 +2368,14 @@ function wireEvents() {
     }
   });
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !elements.saveModal.hidden) {
-      closeSaveModal();
+    if (!elements.saveModal.hidden) {
+      if (event.key === "Escape") {
+        closeSaveModal();
+        return;
+      }
+      if (event.key === "Tab") {
+        trapSaveModalFocus(event);
+      }
     }
   });
   elements.configDropzone.addEventListener("click", (event) => {
@@ -2242,7 +2398,9 @@ function wireEvents() {
   elements.configFileInput.addEventListener("change", () => {
     const file = elements.configFileInput.files?.[0];
     if (file) {
-      loadConfigFile(file);
+      loadConfigFile(file).finally(() => {
+        elements.configFileInput.value = "";
+      });
     }
   });
   elements.configDropzone.addEventListener("dragover", (event) => {
@@ -2288,7 +2446,7 @@ async function bootstrap() {
   applyStoredLayout();
   renderAll();
   if (state.activeRunId) {
-    await refreshActiveRun();
+    await refreshRunState();
   }
   startPolling();
 }
@@ -2299,8 +2457,12 @@ function init() {
   initResizer(elements.resizerLeftMain, "left");
   initResizer(elements.resizerMainRight, "right");
   bootstrap().catch((error) => {
-    elements.pipelineCanvas.innerHTML = `<div class="message-card error">Failed to load workbench: ${error.message}</div>`;
+    replaceChildren(
+      elements.pipelineCanvas,
+      createMessageCard(`Failed to load workbench: ${error.message}`, "error"),
+    );
   });
 }
 
+window.addEventListener("beforeunload", stopPolling);
 window.addEventListener("DOMContentLoaded", init);

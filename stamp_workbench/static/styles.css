@@ -1536,6 +1536,30 @@ h4 {
   line-height: 1;
 }
 
+.cell-order-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.cell-order-button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.cell-order-button:not(:disabled):hover {
+  background: rgba(88, 166, 255, 0.14);
+  border-color: rgba(88, 166, 255, 0.28);
+}
+
 .cell-remove-icon:hover {
   background: rgba(255, 107, 107, 0.14);
   border-color: rgba(255, 107, 107, 0.3);
@@ -1601,6 +1625,8 @@ h4 {
   padding: 0.62rem 0.72rem;
   font-size: 0.73rem;
   line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
   animation: toast-in 160ms ease-out;
 }
 

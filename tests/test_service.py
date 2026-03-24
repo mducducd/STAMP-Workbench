@@ -1,4 +1,5 @@
 import importlib
+import builtins
 import sys
 from pathlib import Path
 
@@ -61,3 +62,35 @@ def test_catalog_import_does_not_probe_hardware(monkeypatch):
     importlib.import_module("stamp_workbench.catalog")
 
     assert called == {"torch": False, "nvidia": False}
+
+
+def test_import_config_yaml_does_not_import_stamp_config(monkeypatch):
+    import stamp_workbench.service as service
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "stamp.utils.config":
+            raise AssertionError("import_config_yaml should not import stamp.utils.config")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    payload = service.import_config_yaml(
+        content="""
+preprocessing:
+  output_dir: /tmp/out
+  wsi_dir: /tmp/wsi
+  extractor: ctranspath
+advanced_config:
+  model_name: barspoon
+  model_params:
+    barspoon:
+      learning_rate: 0.0002
+""",
+        filename="config.yaml",
+    )
+
+    assert payload["blocks"][0]["section"] == "preprocessing"
+    assert payload["advanced_config"]["model_name"] == "barspoon"
+    assert payload["advanced_config"]["model_params"]["barspoon"]["learning_rate"] == 0.0002

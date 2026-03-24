@@ -20,6 +20,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from .catalog import (
+    TASK_CATALOG,
     TASK_COMMANDS,
     catalog_payload,
     default_advanced_config,
@@ -172,8 +173,13 @@ def _clean_list(value: Any, *, presentation: str | None) -> list[str] | None:
     return cleaned or None
 
 
-def _normalize_block(section: str, params: dict[str, Any]) -> dict[str, Any]:
-    block_schema = get_task_catalog()[section]
+def _normalize_block(
+    section: str,
+    params: dict[str, Any],
+    *,
+    block_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    block_schema = block_schema or get_task_catalog()[section]
     normalized: dict[str, Any] = {}
 
     for field_spec in block_schema["fields"]:
@@ -216,6 +222,41 @@ def _normalize_advanced(advanced_config: dict[str, Any] | None) -> dict[str, Any
             continue
         merged[key] = cleaned
     return merged
+
+
+def _normalize_import_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, nested in value.items():
+            cleaned = _normalize_import_value(nested)
+            if cleaned is None:
+                continue
+            normalized[str(key)] = cleaned
+        return normalized
+
+    if isinstance(value, list):
+        cleaned_items = [
+            cleaned
+            for item in value
+            if (cleaned := _normalize_import_value(item)) is not None
+        ]
+        return cleaned_items
+
+    return _clean_scalar(value)
+
+
+def _normalize_import_advanced(advanced_config: dict[str, Any] | None) -> dict[str, Any] | None:
+    if advanced_config is None:
+        return None
+
+    normalized: dict[str, Any] = {}
+    for key, value in advanced_config.items():
+        cleaned = _normalize_import_value(value)
+        if cleaned is None and key != "model_name":
+            continue
+        normalized[key] = cleaned
+
+    return normalized
 
 
 def _validate_paths(blocks: list[PipelineBlock]) -> list[str]:
@@ -477,19 +518,28 @@ def import_config_yaml(
     if not isinstance(raw_payload, dict):
         raise ValueError("STAMP config must be a YAML mapping at the top level.")
 
-    from stamp.utils.config import StampConfig
-
-    validated = StampConfig.model_validate(raw_payload)
-    normalized = validated.model_dump(mode="json", exclude_none=True)
+    task_catalog = TASK_CATALOG
+    recognized_sections = set(task_catalog)
+    normalized: dict[str, Any] = {}
+    ignored_sections: list[str] = []
 
     ordered_sections = [
         section
         for section in raw_payload.keys()
-        if section in get_task_catalog() and normalized.get(section) is not None
+        if section in recognized_sections and raw_payload.get(section) is not None
     ]
-    for section in get_task_catalog():
-        if section in normalized and section not in ordered_sections:
-            ordered_sections.append(section)
+    for section, value in raw_payload.items():
+        if section in recognized_sections:
+            if value is not None and not isinstance(value, dict):
+                raise ValueError(f"{section} section must be a YAML mapping.")
+            if isinstance(value, dict):
+                normalized[section] = _normalize_block(
+                    section,
+                    value,
+                    block_schema=task_catalog[section],
+                )
+        elif section != "advanced_config":
+            ignored_sections.append(str(section))
 
     blocks: list[dict[str, Any]] = []
     for index, section in enumerate(ordered_sections, start=1):
@@ -510,12 +560,20 @@ def import_config_yaml(
             }
         )
 
-    advanced_config = _normalize_advanced(normalized.get("advanced_config"))
+    raw_advanced = raw_payload.get("advanced_config")
+    if raw_advanced is not None and not isinstance(raw_advanced, dict):
+        raise ValueError("advanced_config section must be a YAML mapping.")
+    advanced_config = _normalize_import_advanced(raw_advanced)
 
     warnings: list[str] = []
     if not blocks:
         warnings.append(
             "The YAML loaded, but it did not contain any executable pipeline sections."
+        )
+    if ignored_sections:
+        warnings.append(
+            "Ignored unrecognized top-level section(s): "
+            + ", ".join(sorted(dict.fromkeys(ignored_sections)))
         )
 
     return {
