@@ -104,59 +104,6 @@ const TASK_META = {
   heatmaps:          { icon: "◫",  color: "#f4826e" },
 };
 
-const TASK_PANEL_DEFS = [
-  {
-    id: "paths",
-    title: "Files & Paths",
-    defaultOpen: true,
-    matcher: (field) => field.kind === "path" || field.name.endsWith("_dir") || field.name.endsWith("_path"),
-  },
-  {
-    id: "targets",
-    title: "Labels & Targets",
-    defaultOpen: true,
-    matcher: (field) => [
-      "task",
-      "ground_truth_label",
-      "categories",
-      "status_label",
-      "time_label",
-      "patient_label",
-      "filename_label",
-    ].includes(field.name),
-  },
-  {
-    id: "method",
-    title: "Method",
-    defaultOpen: true,
-    matcher: (field) => [
-      "extractor",
-      "encoder",
-      "generate_hash",
-      "use_vary_precision_transform",
-    ].includes(field.name),
-  },
-  {
-    id: "runtime",
-    title: "Runtime & Sampling",
-    defaultOpen: false,
-    matcher: (field) => [
-      "device",
-      "cache_dir",
-      "max_workers",
-      "tile_size_um",
-      "tile_size_px",
-      "default_slide_mpp",
-    ].includes(field.name),
-  },
-  {
-    id: "other",
-    title: "Other Settings",
-    defaultOpen: false,
-    matcher: () => true,
-  },
-];
-
 const ADVANCED_PANEL_DEFS = [
   {
     id: "training_setup",
@@ -339,13 +286,29 @@ function setPanelOpen(scope, panelId, nextOpen) {
 
 function groupFields(fields, definitions) {
   const grouped = definitions.map((definition) => ({ ...definition, fields: [] }));
+  const unmatched = [];
   for (const field of fields) {
     const bucket = grouped.find((definition) => definition.matcher(field));
     if (bucket) {
       bucket.fields.push(field);
+    } else {
+      unmatched.push(field);
     }
   }
-  return grouped.filter((group) => group.fields.length > 0);
+  const nonEmpty = grouped.filter((group) => group.fields.length > 0);
+  if (unmatched.length > 0) {
+    if (nonEmpty.length > 0) {
+      nonEmpty[nonEmpty.length - 1].fields.push(...unmatched);
+    } else {
+      nonEmpty.push({
+        id: "settings",
+        title: "Settings",
+        defaultOpen: true,
+        fields: unmatched,
+      });
+    }
+  }
+  return nonEmpty;
 }
 
 function readStoredPx(key) {
@@ -636,12 +599,12 @@ function createFieldEditor({ field, value, onChange, disabled = false, helpOverr
       wrapper.append(dropdown);
     }
 
-    const meta = document.createElement("div");
-    meta.className = "field-meta";
-    meta.textContent = suggestions.length
-      ? `${suggestions.length} suggestion${suggestions.length > 1 ? "s" : ""} from other cells.`
-      : "Enter an absolute path for this field.";
-    wrapper.append(meta);
+    if (suggestions.length > 0) {
+      const meta = document.createElement("div");
+      meta.className = "field-meta";
+      meta.textContent = `${suggestions.length} suggestion${suggestions.length > 1 ? "s" : ""} from other cells.`;
+      wrapper.append(meta);
+    }
   }
 
   return wrapper;
@@ -696,12 +659,12 @@ function createSlideTableEditor(field, block) {
   });
   wrapper.append(input);
 
-  const meta = document.createElement("div");
-  meta.className = "field-meta";
-  meta.textContent = block.ui?.autoCreateSlideTable
-    ? "This path will be generated automatically right before STAMP runs."
-    : "Enter an absolute path for this field.";
-  wrapper.append(meta);
+  if (block.ui?.autoCreateSlideTable) {
+    const meta = document.createElement("div");
+    meta.className = "field-meta";
+    meta.textContent = "This path will be generated automatically right before STAMP runs.";
+    wrapper.append(meta);
+  }
 
   if (!supportsAutoSlideTable(block)) {
     return wrapper;
@@ -1244,7 +1207,7 @@ function renderInspector() {
     createMetaPill(`Cell ${index + 1}`, "info"),
     createMetaPill(TASK_COMMANDS[block.section], "info"),
     createMetaPill(block.enabled ? "Active" : "Disabled", block.enabled ? "good" : "warn"),
-    createMetaPill(health.ready ? "Ready to run" : "Needs input", health.ready ? "good" : "warn"),
+    createMetaPill(health.ready ? "Ready to run" : "Missing inputs", health.ready ? "good" : "warn"),
   );
 
   const toolbar = document.createElement("div");
@@ -1263,53 +1226,54 @@ function renderInspector() {
 
   toolbar.append(toggleButton);
 
+  const visibleFields = task.fields.filter((field) => fieldVisibleForBlock(field, block));
   const grid = document.createElement("div");
   grid.className = "inspector-group-stack";
-
-  const visibleFields = task.fields.filter((field) => fieldVisibleForBlock(field, block));
-  const grouped = groupFields(visibleFields, TASK_PANEL_DEFS);
-  for (const panel of grouped) {
-    const panelBody = document.createElement("div");
-    panelBody.className = "field-grid inspector-field-grid";
-    for (const field of panel.fields) {
-      let editor;
-      if (field.name === "ground_truth_label") {
-        editor = createGroundTruthEditor(field, block);
-      } else if (field.name === "slide_table") {
-        editor = createSlideTableEditor(field, block);
-      } else {
-        editor = createFieldEditor({
-          field,
-          value: block.params[field.name],
-          blockId: block.id,
-          onChange: (value) => {
-            block.params[field.name] = value;
-            if (field.name === "task") {
-              if (value !== "classification" && block.ui) {
-                block.ui.multiTarget = false;
-              }
-              if (pipelineRequiresBarspoon()) {
-                state.advancedConfig.model_name = "barspoon";
-              } else if (!state.advancedConfig.model_name || state.advancedConfig.model_name === "") {
-                state.advancedConfig.model_name = "vit";
-              }
-              renderAdvancedConfig();
-              renderInspector();
+  const panelBody = document.createElement("div");
+  panelBody.className = "field-grid inspector-field-grid";
+  for (const field of visibleFields) {
+    let editor;
+    if (field.name === "ground_truth_label") {
+      editor = createGroundTruthEditor(field, block);
+    } else if (field.name === "slide_table") {
+      editor = createSlideTableEditor(field, block);
+    } else {
+      editor = createFieldEditor({
+        field,
+        value: block.params[field.name],
+        blockId: block.id,
+        onChange: (value) => {
+          block.params[field.name] = value;
+          if (field.name === "task") {
+            if (value !== "classification" && block.ui) {
+              block.ui.multiTarget = false;
             }
-            renderPipeline();
-          },
-        });
-      }
-      panelBody.append(editor);
+            if (pipelineRequiresBarspoon()) {
+              state.advancedConfig.model_name = "barspoon";
+            } else if (!state.advancedConfig.model_name || state.advancedConfig.model_name === "") {
+              state.advancedConfig.model_name = "vit";
+            }
+            renderAdvancedConfig();
+            renderInspector();
+          }
+          renderPipeline();
+        },
+      });
     }
-    grid.append(createInspectorPanel(`block:${block.id}`, panel, panelBody));
+    panelBody.append(editor);
   }
+  grid.append(createInspectorPanel(`block:${block.id}`, {
+    id: "settings",
+    title: `${task.title.toUpperCase()} SETTINGS`,
+    defaultOpen: true,
+    fields: visibleFields,
+  }, panelBody));
 
   const note = document.createElement("div");
   note.className = "inspector-note";
   note.textContent = health.ready
     ? "This cell has its required inputs and is ready for pipeline validation."
-    : `Still required: ${health.missing.join(", ")}. Fill those fields here before running the pipeline.`;
+    : `Missing required inputs: ${health.missing.join(", ")}. Fill these fields before running the pipeline.`;
 
   stack.append(lead, meta, toolbar, grid, note);
   elements.blockInspector.append(stack);

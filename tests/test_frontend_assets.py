@@ -38,3 +38,18 @@ def test_run_button_uses_local_missing_input_checks_instead_of_validate_endpoint
     assert '"/api/validate"' not in APP_JS
     assert "collectMissingInputErrors" in APP_JS
     assert "Fill the missing required inputs before running." in APP_JS
+
+
+def test_preprocessing_ui_does_not_expose_cache_directory():
+    assert '"cache_dir"' not in APP_JS
+
+
+def test_task_inspector_does_not_create_other_settings_panel():
+    assert '"Other Settings"' not in APP_JS
+    assert "const unmatched = [];" in APP_JS
+
+
+def test_runtime_sampling_fields_are_not_split_from_paths_panel():
+    assert "const TASK_PANEL_DEFS" not in APP_JS
+    assert "title: `${task.title.toUpperCase()} SETTINGS`" in APP_JS
+    assert 'groupFields(visibleFields, TASK_PANEL_DEFS)' not in APP_JS

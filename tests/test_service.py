@@ -94,3 +94,27 @@ advanced_config:
     assert payload["blocks"][0]["section"] == "preprocessing"
     assert payload["advanced_config"]["model_name"] == "barspoon"
     assert payload["advanced_config"]["model_params"]["barspoon"]["learning_rate"] == 0.0002
+
+
+def test_catalog_marks_default_slide_mpp_and_auxiliary_features_as_optional():
+    import stamp_workbench.catalog as catalog
+
+    preprocessing_fields = {
+        field["name"]: field for field in catalog.TASK_CATALOG["preprocessing"]["fields"]
+    }
+    slide_encoding_fields = {
+        field["name"]: field for field in catalog.TASK_CATALOG["slide_encoding"]["fields"]
+    }
+    patient_encoding_fields = {
+        field["name"]: field for field in catalog.TASK_CATALOG["patient_encoding"]["fields"]
+    }
+    heatmaps_fields = {
+        field["name"]: field for field in catalog.TASK_CATALOG["heatmaps"]["fields"]
+    }
+
+    assert preprocessing_fields["default_slide_mpp"]["label"] == "default_slide_mpp (Optional)"
+    assert heatmaps_fields["default_slide_mpp"]["label"] == "default_slide_mpp (Optional)"
+    assert preprocessing_fields["default_slide_mpp"]["required"] is False
+    assert heatmaps_fields["default_slide_mpp"]["required"] is False
+    assert "specific encoders" in slide_encoding_fields["agg_feat_dir"]["help"]
+    assert "specific encoders" in patient_encoding_fields["agg_feat_dir"]["help"]
