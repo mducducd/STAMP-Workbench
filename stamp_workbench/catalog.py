@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-from importlib import import_module
 from copy import deepcopy
+from functools import lru_cache
+from importlib import import_module
 from shutil import which
 import subprocess
 
@@ -89,10 +90,20 @@ def _detect_accelerator_options() -> list[str]:
     return _detect_device_options()
 
 
-DEVICE_OPTIONS = _detect_device_options()
-ACCELERATOR_OPTIONS = _detect_accelerator_options()
-DEVICE_DEFAULT = DEVICE_OPTIONS[0]
-ACCELERATOR_DEFAULT = ACCELERATOR_OPTIONS[0]
+@lru_cache(maxsize=1)
+def get_device_options() -> tuple[str, ...]:
+    return tuple(_detect_device_options())
+
+
+@lru_cache(maxsize=1)
+def get_accelerator_options() -> tuple[str, ...]:
+    return tuple(_detect_accelerator_options())
+
+
+DEVICE_OPTIONS = ["cpu"]
+ACCELERATOR_OPTIONS = ["cpu"]
+DEVICE_DEFAULT = "cpu"
+ACCELERATOR_DEFAULT = "cpu"
 
 EXTRACTOR_OPTIONS = [
     "ctranspath",
@@ -629,7 +640,37 @@ PIPELINE_TEMPLATES = [
 ]
 
 
+@lru_cache(maxsize=1)
+def get_task_catalog() -> dict[str, dict]:
+    task_catalog = deepcopy(TASK_CATALOG)
+    device_options = list(get_device_options())
+    device_default = device_options[0]
+
+    for section in task_catalog.values():
+        for field in section["fields"]:
+            if field["name"] == "device":
+                field["options"] = device_options
+                field["default"] = device_default
+
+    return task_catalog
+
+
+@lru_cache(maxsize=1)
+def get_advanced_config_schema() -> tuple[dict, ...]:
+    advanced_fields = deepcopy(ADVANCED_CONFIG_SCHEMA)
+    accelerator_options = list(get_accelerator_options())
+    accelerator_default = accelerator_options[0]
+
+    for field in advanced_fields:
+        if field["name"] == "accelerator":
+            field["options"] = accelerator_options
+            field["default"] = accelerator_default
+
+    return tuple(advanced_fields)
+
+
 def default_advanced_config() -> dict:
+    accelerator_default = get_accelerator_options()[0]
     return {
         "seed": 42,
         "bag_size": 512,
@@ -637,7 +678,7 @@ def default_advanced_config() -> dict:
         "batch_size": 64,
         "max_epochs": 32,
         "patience": 16,
-        "accelerator": ACCELERATOR_DEFAULT,
+        "accelerator": accelerator_default,
         "max_lr": 1e-4,
         "div_factor": 25.0,
         "model_name": "vit",
@@ -683,8 +724,8 @@ def default_advanced_config() -> dict:
 
 def catalog_payload() -> dict:
     return {
-        "tasks": deepcopy(TASK_CATALOG),
-        "advanced_fields": deepcopy(ADVANCED_CONFIG_SCHEMA),
+        "tasks": deepcopy(get_task_catalog()),
+        "advanced_fields": deepcopy(list(get_advanced_config_schema())),
         "advanced_defaults": default_advanced_config(),
         "templates": deepcopy(PIPELINE_TEMPLATES),
     }

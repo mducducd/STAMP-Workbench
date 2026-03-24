@@ -20,15 +20,12 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from .catalog import (
-    TASK_CATALOG,
     TASK_COMMANDS,
     catalog_payload,
     default_advanced_config,
+    get_task_catalog,
 )
 
-# The workbench should operate on the STAMP checkout the user launched it from,
-# not on the installed package location inside site-packages.
-REPO_ROOT = Path(os.environ.get("STAMP_WORKBENCH_ROOT", str(Path.cwd()))).expanduser().resolve()
 MAX_LOG_LINES = 2000
 MAX_TERMINAL_LINES = 600
 ALLOWED_SHELL_COMMANDS = {
@@ -50,6 +47,36 @@ ALLOWED_SHELL_COMMANDS = {
     "wc",
 }
 FINAL_RUN_STATUSES = {"completed", "failed", "terminated"}
+_REPO_ROOT: Path | None = None
+
+
+def _looks_like_stamp_checkout(path: Path) -> bool:
+    return (path / "pyproject.toml").is_file() and (path / "src" / "stamp").is_dir()
+
+
+def set_repo_root(path: str | os.PathLike[str] | None = None) -> Path:
+    global _REPO_ROOT
+
+    candidate = Path.cwd() if path is None else Path(path)
+    resolved = candidate.expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"STAMP workbench root does not exist: {resolved}")
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"STAMP workbench root is not a directory: {resolved}")
+    if not _looks_like_stamp_checkout(resolved):
+        raise ValueError(
+            f"STAMP workbench root must point to a STAMP checkout root: {resolved}"
+        )
+
+    _REPO_ROOT = resolved
+    return resolved
+
+
+def get_repo_root() -> Path:
+    if _REPO_ROOT is not None:
+        return _REPO_ROOT
+
+    return set_repo_root(os.environ.get("STAMP_WORKBENCH_ROOT"))
 
 
 def _now_iso() -> str:
@@ -118,13 +145,11 @@ class TerminalRecord:
     history: list[str]
 
 
-
 def _clean_scalar(value: Any) -> Any:
     if isinstance(value, str):
         stripped = value.strip()
         return None if stripped == "" else stripped
     return value
-
 
 
 def _clean_list(value: Any, *, presentation: str | None) -> list[str] | None:
@@ -147,9 +172,8 @@ def _clean_list(value: Any, *, presentation: str | None) -> list[str] | None:
     return cleaned or None
 
 
-
 def _normalize_block(section: str, params: dict[str, Any]) -> dict[str, Any]:
-    block_schema = TASK_CATALOG[section]
+    block_schema = get_task_catalog()[section]
     normalized: dict[str, Any] = {}
 
     for field_spec in block_schema["fields"]:
@@ -178,7 +202,6 @@ def _normalize_block(section: str, params: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-
 def _normalize_advanced(advanced_config: dict[str, Any] | None) -> dict[str, Any]:
     defaults = default_advanced_config()
     if advanced_config is None:
@@ -195,11 +218,11 @@ def _normalize_advanced(advanced_config: dict[str, Any] | None) -> dict[str, Any
     return merged
 
 
-
 def _validate_paths(blocks: list[PipelineBlock]) -> list[str]:
     errors: list[str] = []
+    task_catalog = get_task_catalog()
     for block in blocks:
-        schema = TASK_CATALOG[block.section]
+        schema = task_catalog[block.section]
         params = _normalize_block(block.section, block.params)
         for field_spec in schema["fields"]:
             if field_spec.get("path_role") != "input":
@@ -235,7 +258,6 @@ def _validate_paths(blocks: list[PipelineBlock]) -> list[str]:
     return errors
 
 
-
 def _pipeline_warnings(enabled_sections: list[str]) -> list[str]:
     warnings: list[str] = []
     if "training" in enabled_sections and "crossval" in enabled_sections:
@@ -261,7 +283,7 @@ def _auto_slide_table_enabled(block: PipelineBlock) -> bool:
         return False
     param_names = {
         field_spec["name"]
-        for field_spec in TASK_CATALOG.get(block.section, {}).get("fields", [])
+        for field_spec in get_task_catalog().get(block.section, {}).get("fields", [])
     }
     return (
         "slide_table" in param_names
@@ -285,21 +307,25 @@ def _materialize_auto_slide_tables(
             result = create_temp_slide_table(
                 {
                     "clinical_table": copied.params.get("clini_table"),
-                    "feature_dir": copied.params.get("feature_dir") or copied.params.get("feat_dir"),
+                    "feature_dir": copied.params.get("feature_dir")
+                    or copied.params.get("feat_dir"),
                     "patient_column": copied.params.get("patient_label") or "PATIENT",
-                    "filename_column": copied.params.get("filename_label") or "FILENAME",
+                    "filename_column": copied.params.get("filename_label")
+                    or "FILENAME",
                 }
             )
             copied.params["slide_table"] = result["path"]
             temp_path = Path(result["path"])
             temp_paths.append(temp_path)
             warnings.append(
-                f"{TASK_CATALOG[copied.section]['title']}: auto-created slide table at {result['path']} ({result['rows']} rows)."
+                f"{get_task_catalog()[copied.section]['title']}: auto-created slide table at {result['path']} ({result['rows']} rows)."
             )
             warnings.extend(result.get("warnings", []))
         blocks.append(copied)
 
-    materialized = WorkbenchPayload(blocks=blocks, advanced_config=payload.advanced_config)
+    materialized = WorkbenchPayload(
+        blocks=blocks, advanced_config=payload.advanced_config
+    )
 
     if not keep_files:
         # The caller will clean these up after validation-only use.
@@ -308,8 +334,9 @@ def _materialize_auto_slide_tables(
     return materialized, warnings, temp_paths
 
 
-
-def build_stage_configs(payload: WorkbenchPayload) -> tuple[list[dict[str, Any]], list[str]]:
+def build_stage_configs(
+    payload: WorkbenchPayload,
+) -> tuple[list[dict[str, Any]], list[str]]:
     enabled_blocks = [block for block in payload.blocks if block.enabled]
     if not enabled_blocks:
         raise ValueError("Add at least one enabled block to the pipeline.")
@@ -320,7 +347,7 @@ def build_stage_configs(payload: WorkbenchPayload) -> tuple[list[dict[str, Any]]
     from stamp.utils.config import StampConfig
 
     for block in enabled_blocks:
-        if block.section not in TASK_CATALOG:
+        if block.section not in get_task_catalog():
             raise ValueError(f"Unknown block section: {block.section}")
 
         config: dict[str, Any] = {
@@ -345,12 +372,13 @@ def _compose_config_preview(
     enabled_blocks = [block for block in blocks if block.enabled]
     previews: list[str] = []
 
-    for index, (block, config) in enumerate(zip(enabled_blocks, stage_configs, strict=True), start=1):
+    for index, (block, config) in enumerate(
+        zip(enabled_blocks, stage_configs, strict=True), start=1
+    ):
         header = f"# Cell {index}: {TASK_COMMANDS[block.section]}"
         previews.append(f"{header}\n{yaml.dump(config, sort_keys=False).rstrip()}")
 
     return "\n\n---\n\n".join(previews)
-
 
 
 def validate_payload_dict(payload_dict: dict[str, Any]) -> dict[str, Any]:
@@ -362,23 +390,42 @@ def validate_payload_dict(payload_dict: dict[str, Any]) -> dict[str, Any]:
     try:
         payload = WorkbenchPayload.model_validate(payload_dict)
     except ValidationError as exc:
-        return {"valid": False, "errors": [str(exc)], "warnings": [], "config_preview": ""}
+        return {
+            "valid": False,
+            "errors": [str(exc)],
+            "warnings": [],
+            "config_preview": "",
+        }
 
     try:
-        materialized_payload, auto_warnings, temp_paths = _materialize_auto_slide_tables(
-            payload,
-            keep_files=False,
+        materialized_payload, auto_warnings, temp_paths = (
+            _materialize_auto_slide_tables(
+                payload,
+                keep_files=False,
+            )
         )
         stage_configs, warnings = build_stage_configs(materialized_payload)
     except Exception as exc:
-        return {"valid": False, "errors": [str(exc)], "warnings": [], "config_preview": ""}
+        return {
+            "valid": False,
+            "errors": [str(exc)],
+            "warnings": [],
+            "config_preview": "",
+        }
 
     if materialized_payload is None:
-        return {"valid": False, "errors": ["Failed to prepare pipeline payload."], "warnings": [], "config_preview": ""}
+        return {
+            "valid": False,
+            "errors": ["Failed to prepare pipeline payload."],
+            "warnings": [],
+            "config_preview": "",
+        }
 
     config_preview = _compose_config_preview(materialized_payload.blocks, stage_configs)
 
-    path_errors = _validate_paths([block for block in materialized_payload.blocks if block.enabled])
+    path_errors = _validate_paths(
+        [block for block in materialized_payload.blocks if block.enabled]
+    )
     for temp_path in temp_paths:
         try:
             temp_path.unlink(missing_ok=True)
@@ -401,7 +448,12 @@ def validate_payload_dict(payload_dict: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def import_config_yaml(*, content: str | None = None, path_str: str | None = None, filename: str | None = None) -> dict[str, Any]:
+def import_config_yaml(
+    *,
+    content: str | None = None,
+    path_str: str | None = None,
+    filename: str | None = None,
+) -> dict[str, Any]:
     if content is None and path_str is None:
         raise ValueError("Provide YAML content or a path to config.yaml.")
 
@@ -433,9 +485,9 @@ def import_config_yaml(*, content: str | None = None, path_str: str | None = Non
     ordered_sections = [
         section
         for section in raw_payload.keys()
-        if section in TASK_CATALOG and normalized.get(section) is not None
+        if section in get_task_catalog() and normalized.get(section) is not None
     ]
-    for section in TASK_CATALOG:
+    for section in get_task_catalog():
         if section in normalized and section not in ordered_sections:
             ordered_sections.append(section)
 
@@ -462,7 +514,9 @@ def import_config_yaml(*, content: str | None = None, path_str: str | None = Non
 
     warnings: list[str] = []
     if not blocks:
-        warnings.append("The YAML loaded, but it did not contain any executable pipeline sections.")
+        warnings.append(
+            "The YAML loaded, but it did not contain any executable pipeline sections."
+        )
 
     return {
         "source": source_name,
@@ -489,8 +543,9 @@ def create_temp_slide_table(payload_dict: dict[str, Any]) -> dict[str, Any]:
     if not feature_dir.is_dir():
         raise ValueError(f"Feature directory is not a directory: {feature_dir}")
 
-    from stamp.modeling.data import read_table
     import pandas as pd
+
+    from stamp.modeling.data import read_table
 
     frame = read_table(clinical_table, usecols=[payload.patient_column], dtype=str)
     patient_ids = sorted(
@@ -513,7 +568,11 @@ def create_temp_slide_table(payload_dict: dict[str, Any]) -> dict[str, Any]:
         relative_name = feature_path.relative_to(feature_dir).as_posix()
         basename = feature_path.name
         patient_match = next(
-            (patient_id for patient_id in patient_ids if basename.startswith(patient_id)),
+            (
+                patient_id
+                for patient_id in patient_ids
+                if basename.startswith(patient_id)
+            ),
             None,
         )
         if patient_match is None:
@@ -583,14 +642,17 @@ def export_config_yaml(payload_dict: dict[str, Any]) -> dict[str, Any]:
         if selected_block_ids:
             picked = block.id in selected_block_ids
         elif selected_sections:
-            picked = block.section in selected_sections and block.section not in seen_sections
+            picked = (
+                block.section in selected_sections
+                and block.section not in seen_sections
+            )
 
         if not picked:
             continue
 
         if block.section in seen_sections:
             raise ValueError(
-                f"Only one cell per task section can be saved. Multiple selections found for {TASK_CATALOG[block.section]['title']}."
+                f"Only one cell per task section can be saved. Multiple selections found for {get_task_catalog()[block.section]['title']}."
             )
 
         chosen_blocks.append(block)
@@ -598,21 +660,36 @@ def export_config_yaml(payload_dict: dict[str, Any]) -> dict[str, Any]:
         seen_block_ids.add(block.id)
 
     if selected_block_ids:
-        missing_block_ids = [block_id for block_id in selected_block_ids if block_id not in seen_block_ids]
+        missing_block_ids = [
+            block_id
+            for block_id in selected_block_ids
+            if block_id not in seen_block_ids
+        ]
         if missing_block_ids:
-            raise ValueError(f"Selected cells missing from pipeline: {', '.join(missing_block_ids)}")
+            raise ValueError(
+                f"Selected cells missing from pipeline: {', '.join(missing_block_ids)}"
+            )
     elif selected_sections:
-        missing_sections = [section for section in selected_sections if section not in seen_sections]
+        missing_sections = [
+            section for section in selected_sections if section not in seen_sections
+        ]
         if missing_sections:
-            raise ValueError(f"Selected sections missing from pipeline: {', '.join(missing_sections)}")
+            raise ValueError(
+                f"Selected sections missing from pipeline: {', '.join(missing_sections)}"
+            )
 
     config_payload = WorkbenchPayload(
-        blocks=[PipelineBlock.model_validate({
-            "id": block.id,
-            "section": block.section,
-            "enabled": True,
-            "params": block.params,
-        }) for block in chosen_blocks],
+        blocks=[
+            PipelineBlock.model_validate(
+                {
+                    "id": block.id,
+                    "section": block.section,
+                    "enabled": True,
+                    "params": block.params,
+                }
+            )
+            for block in chosen_blocks
+        ],
         advanced_config=payload.advanced_config,
     )
 
@@ -644,16 +721,17 @@ def export_config_yaml(payload_dict: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-
 def list_directory(path_str: str | None = None) -> dict[str, Any]:
-    base = Path(path_str or REPO_ROOT).expanduser().resolve()
+    base = Path(path_str or get_repo_root()).expanduser().resolve()
     if not base.exists():
         raise FileNotFoundError(f"Path does not exist: {base}")
     if not base.is_dir():
         raise NotADirectoryError(f"Path is not a directory: {base}")
 
     entries = []
-    for child in sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+    for child in sorted(
+        base.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())
+    ):
         entries.append(
             {
                 "name": child.name,
@@ -667,7 +745,6 @@ def list_directory(path_str: str | None = None) -> dict[str, Any]:
         "parent": str(base.parent),
         "entries": entries,
     }
-
 
 
 def inspect_table(path_str: str) -> dict[str, Any]:
@@ -688,7 +765,6 @@ def inspect_table(path_str: str) -> dict[str, Any]:
         "dtypes": {column: str(dtype) for column, dtype in frame.dtypes.items()},
         "preview": preview,
     }
-
 
 
 def inspect_column_values(path_str: str, column_name: str) -> dict[str, Any]:
@@ -718,8 +794,8 @@ def inspect_column_values(path_str: str, column_name: str) -> dict[str, Any]:
     }
 
 
-
 def environment_summary() -> dict[str, Any]:
+    repo_root = get_repo_root()
     devices = ["cpu"]
     if which("nvidia-smi"):
         devices.insert(0, "cuda")
@@ -727,7 +803,7 @@ def environment_summary() -> dict[str, Any]:
         devices.append("mps")
 
     return {
-        "cwd": str(REPO_ROOT),
+        "cwd": str(repo_root),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "devices": devices,
@@ -774,12 +850,16 @@ class RunManager:
         stage_configs: list[dict[str, Any]] = []
         try:
             payload = WorkbenchPayload.model_validate(payload_dict)
-            materialized_payload, auto_warnings, temp_paths = _materialize_auto_slide_tables(
-                payload,
-                keep_files=True,
+            materialized_payload, auto_warnings, temp_paths = (
+                _materialize_auto_slide_tables(
+                    payload,
+                    keep_files=True,
+                )
             )
             stage_configs, warnings = build_stage_configs(materialized_payload)
-            path_errors = _validate_paths([block for block in materialized_payload.blocks if block.enabled])
+            path_errors = _validate_paths(
+                [block for block in materialized_payload.blocks if block.enabled]
+            )
             if path_errors:
                 raise ValueError("\n".join(path_errors))
         except Exception:
@@ -793,7 +873,9 @@ class RunManager:
         if materialized_payload is None:
             raise RuntimeError("Failed to prepare run payload.")
 
-        enabled_blocks = [block for block in materialized_payload.blocks if block.enabled]
+        enabled_blocks = [
+            block for block in materialized_payload.blocks if block.enabled
+        ]
         run_id = uuid.uuid4().hex[:10]
         now = _now_iso()
         stages = [
@@ -805,7 +887,9 @@ class RunManager:
             status="queued",
             created_at=now,
             updated_at=now,
-            config_preview=_compose_config_preview(materialized_payload.blocks, stage_configs),
+            config_preview=_compose_config_preview(
+                materialized_payload.blocks, stage_configs
+            ),
             warnings=[*auto_warnings, *warnings],
             scope=str(payload_dict.get("scope") or "pipeline"),
             block_id=payload_dict.get("block_id"),
@@ -833,7 +917,9 @@ class RunManager:
             if run.status in {"running", "stopping", "terminating"}:
                 return self._serialize(run)
             if run.status in FINAL_RUN_STATUSES:
-                raise ValueError("This run has already finished. Create a new run to execute again.")
+                raise ValueError(
+                    "This run has already finished. Create a new run to execute again."
+                )
 
             self._stop_flags[run_id].clear()
             self._terminate_flags[run_id].clear()
@@ -921,7 +1007,9 @@ class RunManager:
         except Exception:
             pass
 
-    def _append_log(self, run_id: str, message: str, *, stage_index: int | None = None) -> None:
+    def _append_log(
+        self, run_id: str, message: str, *, stage_index: int | None = None
+    ) -> None:
         clean_message = message.rstrip("\n")
         if not clean_message:
             return
@@ -935,7 +1023,9 @@ class RunManager:
             if stage_index is not None:
                 run.stages[stage_index].logs.append(clean_message)
                 if len(run.stages[stage_index].logs) > MAX_LOG_LINES:
-                    run.stages[stage_index].logs = run.stages[stage_index].logs[-MAX_LOG_LINES:]
+                    run.stages[stage_index].logs = run.stages[stage_index].logs[
+                        -MAX_LOG_LINES:
+                    ]
         self._console_echo(run_id, clean_message)
 
     def _set_status(
@@ -962,7 +1052,9 @@ class RunManager:
                     stage.status = stage_status
                 if return_code is not None:
                     stage.return_code = return_code
-            stage_command = None if stage_index is None else run.stages[stage_index].command
+            stage_command = (
+                None if stage_index is None else run.stages[stage_index].command
+            )
         status_parts: list[str] = []
         if run_status is not None:
             status_parts.append(f"run={run_status}")
@@ -997,18 +1089,27 @@ class RunManager:
                 if stage.status == "completed":
                     continue
                 if self._has_terminate_request(run_id):
-                    self._append_log(run_id, "[workbench] Run terminated before next stage.")
+                    self._append_log(
+                        run_id, "[workbench] Run terminated before next stage."
+                    )
                     self._set_status(run_id, run_status="terminated")
                     return
                 if self._has_stop_request(run_id):
-                    self._append_log(run_id, "[workbench] Stop requested. Remaining stages left pending.")
+                    self._append_log(
+                        run_id,
+                        "[workbench] Stop requested. Remaining stages left pending.",
+                    )
                     self._set_status(run_id, run_status="stopped")
                     return
 
                 temp_path: Path | None = None
                 try:
-                    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as handle:
-                        yaml.safe_dump(stage_configs[stage_index], handle, sort_keys=False)
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".yaml", delete=False
+                    ) as handle:
+                        yaml.safe_dump(
+                            stage_configs[stage_index], handle, sort_keys=False
+                        )
                         temp_path = Path(handle.name)
 
                     command = [
@@ -1019,12 +1120,16 @@ class RunManager:
                         str(temp_path),
                         stage.command,
                     ]
-                    self._append_log(run_id, f"$ {' '.join(command)}", stage_index=stage_index)
-                    self._set_status(run_id, stage_index=stage_index, stage_status="running")
+                    self._append_log(
+                        run_id, f"$ {' '.join(command)}", stage_index=stage_index
+                    )
+                    self._set_status(
+                        run_id, stage_index=stage_index, stage_status="running"
+                    )
 
                     process = subprocess.Popen(
                         command,
-                        cwd=REPO_ROOT,
+                        cwd=get_repo_root(),
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
@@ -1040,7 +1145,10 @@ class RunManager:
                             break
                         if line:
                             self._append_log(run_id, line, stage_index=stage_index)
-                        if self._has_terminate_request(run_id) and process.poll() is None:
+                        if (
+                            self._has_terminate_request(run_id)
+                            and process.poll() is None
+                        ):
                             self._terminate_process(process)
 
                     return_code = process.wait()
@@ -1048,7 +1156,11 @@ class RunManager:
                         self._processes.pop(run_id, None)
 
                     if self._has_terminate_request(run_id):
-                        self._append_log(run_id, "[workbench] Stage terminated by user.", stage_index=stage_index)
+                        self._append_log(
+                            run_id,
+                            "[workbench] Stage terminated by user.",
+                            stage_index=stage_index,
+                        )
                         self._set_status(
                             run_id,
                             run_status="terminated",
@@ -1080,7 +1192,10 @@ class RunManager:
                     )
 
                     if self._has_stop_request(run_id):
-                        self._append_log(run_id, "[workbench] Stop requested. Pipeline paused after current stage.")
+                        self._append_log(
+                            run_id,
+                            "[workbench] Stop requested. Pipeline paused after current stage.",
+                        )
                         self._set_status(run_id, run_status="stopped")
                         return
                 finally:
@@ -1113,9 +1228,10 @@ class RunManager:
 class TerminalManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        repo_root = get_repo_root()
         self._record = TerminalRecord(
-            cwd=str(REPO_ROOT),
-            history=[f"Workbench navigator ready in {REPO_ROOT}"],
+            cwd=str(repo_root),
+            history=[f"Workbench navigator ready in {repo_root}"],
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -1163,10 +1279,8 @@ class TerminalManager:
 
         try:
             completed = subprocess.run(
-                cmd,
+                tokens,
                 cwd=cwd,
-                shell=True,
-                executable="/bin/bash",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -1214,7 +1328,6 @@ class TerminalManager:
             self._record.history.append(line)
             if len(self._record.history) > MAX_TERMINAL_LINES:
                 self._record.history = self._record.history[-MAX_TERMINAL_LINES:]
-
 
 
 def bootstrap_payload() -> dict[str, Any]:

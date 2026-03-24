@@ -18,12 +18,25 @@ from .service import (
     inspect_column_values,
     inspect_table,
     list_directory,
+    set_repo_root,
     validate_payload_dict,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-RUN_MANAGER = RunManager()
-TERMINAL_MANAGER = TerminalManager()
+RUN_MANAGER: RunManager | None = None
+TERMINAL_MANAGER: TerminalManager | None = None
+
+
+def _run_manager() -> RunManager:
+    if RUN_MANAGER is None:
+        raise RuntimeError("STAMP workbench server has not been initialized.")
+    return RUN_MANAGER
+
+
+def _terminal_manager() -> TerminalManager:
+    if TERMINAL_MANAGER is None:
+        raise RuntimeError("STAMP workbench server has not been initialized.")
+    return TERMINAL_MANAGER
 
 
 class WorkbenchHandler(BaseHTTPRequestHandler):
@@ -35,17 +48,17 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/bootstrap":
             payload = bootstrap_payload()
-            payload["runs"] = RUN_MANAGER.list_runs()
-            payload["terminal"] = TERMINAL_MANAGER.snapshot()
+            payload["runs"] = _run_manager().list_runs()
+            payload["terminal"] = _terminal_manager().snapshot()
             self._send_json(payload)
             return
 
         if parsed.path == "/api/runs":
-            self._send_json({"runs": RUN_MANAGER.list_runs()})
+            self._send_json({"runs": _run_manager().list_runs()})
             return
 
         if len(segments) == 3 and segments[:2] == ["api", "runs"]:
-            run = RUN_MANAGER.get_run(segments[2])
+            run = _run_manager().get_run(segments[2])
             if run is None:
                 self._send_json({"error": "Run not found."}, status=HTTPStatus.NOT_FOUND)
                 return
@@ -63,7 +76,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/terminal":
-            self._send_json(TERMINAL_MANAGER.snapshot())
+            self._send_json(_terminal_manager().snapshot())
             return
 
         self._serve_static(parsed.path)
@@ -81,7 +94,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/runs":
             try:
-                run = RUN_MANAGER.create(body or {})
+                run = _run_manager().create(body or {})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -92,11 +105,11 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
             run_id, action = segments[2], segments[3]
             try:
                 if action == "start":
-                    run = RUN_MANAGER.start(run_id)
+                    run = _run_manager().start(run_id)
                 elif action == "stop":
-                    run = RUN_MANAGER.stop(run_id)
+                    run = _run_manager().stop(run_id)
                 elif action == "terminate":
-                    run = RUN_MANAGER.terminate(run_id)
+                    run = _run_manager().terminate(run_id)
                 else:
                     raise KeyError("Unknown run action.")
             except KeyError as exc:
@@ -161,7 +174,7 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/terminal":
             try:
-                result = TERMINAL_MANAGER.run((body or {}).get("command", ""))
+                result = _terminal_manager().run((body or {}).get("command", ""))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
                 return
@@ -218,7 +231,17 @@ class WorkbenchHandler(BaseHTTPRequestHandler):
         return [segment for segment in path.split("/") if segment]
 
 
-def serve(*, host: str = "127.0.0.1", port: int = 8010) -> None:
+def serve(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8010,
+    root: str | Path | None = None,
+) -> None:
+    global RUN_MANAGER, TERMINAL_MANAGER
+
+    set_repo_root(root)
+    RUN_MANAGER = RunManager()
+    TERMINAL_MANAGER = TerminalManager()
     server = ThreadingHTTPServer((host, port), WorkbenchHandler)
     print(f"STAMP workbench running at http://{host}:{port}", flush=True)
     try:
@@ -233,8 +256,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the STAMP workbench server.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8010)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        help="Path to the STAMP checkout root. Defaults to the current working directory.",
+    )
     args = parser.parse_args(argv)
-    serve(host=args.host, port=args.port)
+    serve(host=args.host, port=args.port, root=args.root)
 
 
 if __name__ == "__main__":
