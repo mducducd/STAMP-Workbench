@@ -18,6 +18,22 @@ def test_polling_does_not_use_overlapping_intervals():
     assert "queueRunRefresh" in APP_JS
 
 
+def test_live_input_renders_are_scheduled_and_polling_skips_noop_repaints():
+    assert "function schedulePipelineRender(delay = 120)" in APP_JS
+    assert "state.pipelineRenderHandle" in APP_JS
+    assert "schedulePipelineRender();" in APP_JS
+    assert "function buildRunRenderSignature(runs, activeRunId, activeRun)" in APP_JS
+    assert "const nextRunRenderSignature = buildRunRenderSignature(" in APP_JS
+    assert "if (nextRunRenderSignature === state.runRenderSignature)" in APP_JS
+
+
+def test_pipeline_cards_are_reused_across_renders():
+    assert "const pipelineCardViews = new Map();" in APP_JS
+    assert "function ensurePipelineCardView(blockId)" in APP_JS
+    assert "function updatePipelineCardView(view, block, index)" in APP_JS
+    assert "pipelineCardViews.delete(blockId);" in APP_JS
+
+
 def test_config_picker_and_modal_accessibility_regressions_are_covered():
     assert 'elements.configFileInput.value = "";' in APP_JS
     assert "trapSaveModalFocus" in APP_JS

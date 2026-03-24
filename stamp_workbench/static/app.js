@@ -15,6 +15,8 @@ const state = {
   pollingHandle: null,
   pollingEnabled: false,
   runRefreshLock: null,
+  runRenderSignature: null,
+  pipelineRenderHandle: null,
   draggedTaskSection: null,
   draggedBlockId: null,
   saveModalRestoreFocus: null,
@@ -62,6 +64,8 @@ const elements = {
   resizerMainRight: document.getElementById("resizer-main-right"),
   themeToggle: document.getElementById("theme-toggle"),
 };
+
+const pipelineCardViews = new Map();
 
 const LAYOUT_STORAGE = {
   left: "workbench.leftColPx",
@@ -241,6 +245,10 @@ function insertBlock(section, index = state.blocks.length) {
 
 function selectedBlock() {
   return state.blocks.find((block) => block.id === state.selectedBlockId) || null;
+}
+
+function blockById(blockId) {
+  return state.blocks.find((block) => block.id === blockId) || null;
 }
 
 function statusClass(status) {
@@ -520,6 +528,46 @@ function setTerminalMessage(message) {
   }
 }
 
+function schedulePipelineRender(delay = 120) {
+  if (state.pipelineRenderHandle) {
+    window.clearTimeout(state.pipelineRenderHandle);
+  }
+  state.pipelineRenderHandle = window.setTimeout(() => {
+    state.pipelineRenderHandle = null;
+    renderPipeline();
+  }, delay);
+}
+
+function buildRunRenderSignature(runs, activeRunId, activeRun) {
+  return JSON.stringify({
+    transientRunningBlockId: state.transientRunningBlockId,
+    activeRunId,
+    runs: (runs || []).map((run) => ({
+      run_id: run.run_id,
+      status: run.status,
+      scope: run.scope,
+      block_id: run.block_id || null,
+      stage_statuses: (run.stages || []).map((stage) => stage.status || ""),
+    })),
+    activeRun: activeRun
+      ? {
+        run_id: activeRun.run_id,
+        status: activeRun.status,
+        scope: activeRun.scope,
+        block_id: activeRun.block_id || null,
+        warnings: (activeRun.warnings || []).length,
+        errors: (activeRun.errors || []).length,
+        logs: (activeRun.logs || []).length,
+        stages: (activeRun.stages || []).map((stage) => ({
+          command: stage.command || "",
+          status: stage.status || "",
+          logs: (stage.logs || []).length,
+        })),
+      }
+      : null,
+  });
+}
+
 function getPathSuggestions(fieldName, excludeBlockId) {
   const seen = new Set();
   const suggestions = [];
@@ -731,7 +779,7 @@ function createSlideTableEditor(field, block) {
   input.disabled = Boolean(block.ui?.autoCreateSlideTable);
   input.addEventListener("input", () => {
     block.params[field.name] = input.value;
-    renderPipeline();
+    schedulePipelineRender();
   });
   wrapper.append(input);
 
@@ -877,7 +925,7 @@ function createGroundTruthEditor(field, block) {
         state.advancedConfig.model_name = "barspoon";
         renderAdvancedConfig();
       }
-      renderPipeline();
+      schedulePipelineRender();
     });
   } else {
     input.type = "text";
@@ -887,7 +935,7 @@ function createGroundTruthEditor(field, block) {
       : (block.params.ground_truth_label || "");
     input.addEventListener("input", () => {
       block.params.ground_truth_label = input.value;
-      renderPipeline();
+      schedulePipelineRender();
     });
   }
 
@@ -1473,7 +1521,11 @@ function renderInspector() {
             renderAdvancedConfig();
             renderInspector();
           }
-          renderPipeline();
+          if (field.kind === "select" || field.kind === "boolean") {
+            renderPipeline();
+          } else {
+            schedulePipelineRender();
+          }
         },
       });
     }
@@ -1496,231 +1548,347 @@ function renderInspector() {
   elements.blockInspector.append(stack);
 }
 
+function createPipelineCardView(blockId) {
+  const card = document.createElement("article");
+  card.className = "cell-card";
+  card.tabIndex = 0;
+  card.draggable = true;
+  card.dataset.blockId = blockId;
+
+  card.addEventListener("click", (event) => {
+    if (event.target.closest("button, input, textarea, select, a")) {
+      return;
+    }
+    const liveBlock = blockById(card.dataset.blockId);
+    if (!liveBlock) {
+      return;
+    }
+    state.selectedBlockId = liveBlock.id;
+    renderPipeline();
+    renderInspector();
+  });
+  card.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    const liveBlock = blockById(card.dataset.blockId);
+    if (!liveBlock) {
+      return;
+    }
+    event.preventDefault();
+    state.selectedBlockId = liveBlock.id;
+    renderPipeline();
+    renderInspector();
+  });
+  card.addEventListener("dragstart", (event) => {
+    const liveBlock = blockById(card.dataset.blockId);
+    if (!liveBlock) {
+      return;
+    }
+    state.draggedBlockId = liveBlock.id;
+    card.classList.add("dragging");
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", `block:${liveBlock.id}`);
+    }
+  });
+  card.addEventListener("dragend", () => {
+    state.draggedBlockId = null;
+    card.classList.remove("dragging");
+    clearDropTargets();
+  });
+  card.addEventListener("dragenter", (event) => {
+    const payload = dragPayloadFromEvent(event);
+    if (!payload) {
+      return;
+    }
+    const currentIndex = state.blocks.findIndex((block) => block.id === card.dataset.blockId);
+    if (currentIndex === -1) {
+      return;
+    }
+    event.preventDefault();
+    const target = cardDropIndex(card, currentIndex, event);
+    clearDropTargets();
+    card.classList.add(target.position === "before" ? "drop-before" : "drop-after");
+    elements.pipelineCanvas.classList.add("drop-active");
+  });
+  card.addEventListener("dragover", (event) => {
+    const payload = dragPayloadFromEvent(event);
+    if (!payload) {
+      return;
+    }
+    const currentIndex = state.blocks.findIndex((block) => block.id === card.dataset.blockId);
+    if (currentIndex === -1) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = payload.kind === "block" ? "move" : "copy";
+    }
+    const target = cardDropIndex(card, currentIndex, event);
+    clearDropTargets();
+    card.classList.add(target.position === "before" ? "drop-before" : "drop-after");
+    elements.pipelineCanvas.classList.add("drop-active");
+  });
+  card.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget && card.contains(event.relatedTarget)) {
+      return;
+    }
+    card.classList.remove("drop-before", "drop-after");
+    if (!elements.pipelineCanvas.querySelector(".drop-slot.active, .cell-card.drop-before, .cell-card.drop-after")) {
+      elements.pipelineCanvas.classList.remove("drop-active");
+    }
+  });
+  card.addEventListener("drop", (event) => {
+    const payload = dragPayloadFromEvent(event);
+    if (!payload) {
+      return;
+    }
+    const currentIndex = state.blocks.findIndex((block) => block.id === card.dataset.blockId);
+    if (currentIndex === -1) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const target = cardDropIndex(card, currentIndex, event);
+    applyDropPayload(payload, target.index);
+  });
+
+  const shell = document.createElement("div");
+  shell.className = "cell-shell";
+
+  const main = document.createElement("div");
+  main.className = "cell-main";
+
+  const head = document.createElement("div");
+  head.className = "cell-head";
+
+  const headLead = document.createElement("div");
+  headLead.className = "cell-head-lead";
+
+  const runIconButton = document.createElement("button");
+  runIconButton.type = "button";
+  runIconButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const liveBlock = blockById(card.dataset.blockId);
+    if (liveBlock) {
+      runSingleBlock(liveBlock);
+    }
+  });
+
+  const copy = document.createElement("div");
+  copy.className = "cell-head-copy";
+
+  const titleRow = document.createElement("div");
+  titleRow.className = "cell-title-row";
+
+  const indexBadge = document.createElement("span");
+  indexBadge.className = "cell-index-badge";
+
+  const title = document.createElement("h3");
+
+  const subtitle = document.createElement("p");
+
+  titleRow.append(indexBadge, title);
+  copy.append(titleRow, subtitle);
+  headLead.append(runIconButton, copy);
+
+  const statusPill = document.createElement("span");
+  statusPill.className = "meta-pill cell-status-pill";
+
+  head.append(headLead, statusPill);
+
+  const summaryHost = document.createElement("div");
+  summaryHost.className = "cell-summary-host";
+
+  const runtimeHost = document.createElement("div");
+  runtimeHost.className = "cell-runtime-host";
+
+  const footer = document.createElement("div");
+  footer.className = "cell-footer";
+
+  const primaryActions = document.createElement("div");
+  primaryActions.className = "cell-footer-actions";
+
+  const runtimeButton = document.createElement("button");
+  runtimeButton.type = "button";
+  runtimeButton.className = "ghost cell-action-button";
+  runtimeButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const liveBlock = blockById(card.dataset.blockId);
+    if (!liveBlock) {
+      return;
+    }
+    liveBlock.ui = liveBlock.ui || {};
+    liveBlock.ui.showRuntime = !liveBlock.ui.showRuntime;
+    renderPipeline();
+  });
+
+  primaryActions.append(runtimeButton);
+
+  const secondaryActions = document.createElement("div");
+  secondaryActions.className = "cell-footer-actions cell-footer-actions-secondary";
+
+  const enableButton = document.createElement("button");
+  enableButton.type = "button";
+  enableButton.className = "ghost cell-action-button";
+  enableButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const liveBlock = blockById(card.dataset.blockId);
+    if (!liveBlock) {
+      return;
+    }
+    liveBlock.enabled = !liveBlock.enabled;
+    renderPipeline();
+    renderInspector();
+    renderTopbar();
+  });
+
+  const moveUpButton = document.createElement("button");
+  moveUpButton.type = "button";
+  moveUpButton.className = "ghost cell-order-button";
+  moveUpButton.textContent = "↑";
+  moveUpButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const currentIndex = state.blocks.findIndex((block) => block.id === card.dataset.blockId);
+    if (currentIndex !== -1) {
+      moveBlock(currentIndex, currentIndex - 1);
+    }
+  });
+
+  const moveDownButton = document.createElement("button");
+  moveDownButton.type = "button";
+  moveDownButton.className = "ghost cell-order-button";
+  moveDownButton.textContent = "↓";
+  moveDownButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const currentIndex = state.blocks.findIndex((block) => block.id === card.dataset.blockId);
+    if (currentIndex !== -1) {
+      moveBlock(currentIndex, currentIndex + 1);
+    }
+  });
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "ghost cell-remove-icon cell-action-button";
+  removeButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    removeBlock(card.dataset.blockId);
+  });
+
+  secondaryActions.append(enableButton, moveUpButton, moveDownButton, removeButton);
+  footer.append(primaryActions, secondaryActions);
+
+  main.append(head, summaryHost, runtimeHost, footer);
+  shell.append(main);
+  card.append(shell);
+
+  return {
+    card,
+    runIconButton,
+    indexBadge,
+    title,
+    subtitle,
+    statusPill,
+    summaryHost,
+    runtimeHost,
+    runtimeButton,
+    enableButton,
+    moveUpButton,
+    moveDownButton,
+    removeButton,
+  };
+}
+
+function ensurePipelineCardView(blockId) {
+  let view = pipelineCardViews.get(blockId);
+  if (view) {
+    return view;
+  }
+  view = createPipelineCardView(blockId);
+  pipelineCardViews.set(blockId, view);
+  return view;
+}
+
+function updatePipelineCardView(view, block, index) {
+  const task = state.catalog.tasks[block.section];
+  const blockRunning = isActiveRunForBlock(block);
+  const blockPending = isPendingBlock(block);
+  const blockDisabled = !block.enabled;
+  const taskMeta = TASK_META[block.section] || { icon: "◆", color: "#97aabd" };
+  const status = blockHealthState(task, block);
+
+  view.card.dataset.blockId = block.id;
+  view.card.dataset.section = block.section;
+  view.card.style.setProperty("--task-color", taskMeta.color);
+  view.card.classList.toggle("selected", block.id === state.selectedBlockId);
+  view.card.classList.toggle("pending", blockPending);
+  view.card.classList.toggle("disabled", blockDisabled);
+
+  view.runIconButton.className = `cell-head-run ${blockRunning ? "running" : "idle"}`;
+  view.runIconButton.setAttribute("aria-label", blockRunning ? `Stop ${task.title} step` : `Run ${task.title} step`);
+  view.runIconButton.title = blockRunning ? "Stop step" : "Run step";
+  view.runIconButton.textContent = blockRunning ? "■" : "▶";
+
+  view.indexBadge.textContent = `#${index + 1}`;
+  view.title.textContent = task.title;
+  view.subtitle.textContent = task.summary;
+
+  view.statusPill.className = `meta-pill ${status.tone} cell-status-pill`;
+  view.statusPill.textContent = status.label;
+
+  replaceChildren(view.summaryHost, renderBlockSummary(task, block));
+
+  if (block.ui?.showRuntime) {
+    replaceChildren(view.runtimeHost, renderBlockRuntime(block));
+  } else {
+    replaceChildren(view.runtimeHost);
+  }
+
+  setButtonContent(view.runtimeButton, ">_", block.ui?.showRuntime ? "Hide Terminal" : "Show Terminal");
+  setButtonContent(view.enableButton, block.enabled ? "⊘" : "✓", block.enabled ? "Disable" : "Enable");
+
+  view.moveUpButton.setAttribute("aria-label", `Move ${task.title} cell up`);
+  view.moveUpButton.title = "Move cell up";
+  view.moveUpButton.disabled = index === 0;
+
+  view.moveDownButton.setAttribute("aria-label", `Move ${task.title} cell down`);
+  view.moveDownButton.title = "Move cell down";
+  view.moveDownButton.disabled = index === state.blocks.length - 1;
+
+  view.removeButton.setAttribute("aria-label", `Remove ${task.title} cell`);
+  view.removeButton.title = "Remove cell";
+  setButtonContent(view.removeButton, "×", "Remove");
+}
+
 function renderPipeline() {
+  if (state.pipelineRenderHandle) {
+    window.clearTimeout(state.pipelineRenderHandle);
+    state.pipelineRenderHandle = null;
+  }
   renderWorkspaceSummary();
-  replaceChildren(elements.pipelineCanvas);
+
+  const activeBlockIds = new Set(state.blocks.map((block) => block.id));
+  for (const [blockId, view] of pipelineCardViews.entries()) {
+    if (!activeBlockIds.has(blockId)) {
+      view.card.remove();
+      pipelineCardViews.delete(blockId);
+    }
+  }
 
   if (state.blocks.length === 0) {
-    elements.pipelineCanvas.append(createDropSlot(0, true));
+    replaceChildren(elements.pipelineCanvas, createDropSlot(0, true));
     return;
   }
 
-  elements.pipelineCanvas.append(createDropSlot(0));
-
+  const nodes = [createDropSlot(0)];
   state.blocks.forEach((block, index) => {
-    const task = state.catalog.tasks[block.section];
-    const blockRunning = isActiveRunForBlock(block);
-    const blockPending = isPendingBlock(block);
-    const blockDisabled = !block.enabled;
-    const taskMeta = TASK_META[block.section] || { icon: "◆", color: "#97aabd" };
-    const card = document.createElement("article");
-    card.className = `cell-card ${block.id === state.selectedBlockId ? "selected" : ""} ${blockPending ? "pending" : ""} ${blockDisabled ? "disabled" : ""}`;
-    card.dataset.section = block.section;
-    card.style.setProperty("--task-color", taskMeta.color);
-    card.tabIndex = 0;
-    card.draggable = true;
-
-    card.addEventListener("click", (event) => {
-      if (event.target.closest("button, input, textarea, select, a")) {
-        return;
-      }
-      state.selectedBlockId = block.id;
-      renderPipeline();
-      renderInspector();
-    });
-    card.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") {
-        return;
-      }
-      event.preventDefault();
-      state.selectedBlockId = block.id;
-      renderPipeline();
-      renderInspector();
-    });
-    card.addEventListener("dragstart", (event) => {
-      state.draggedBlockId = block.id;
-      card.classList.add("dragging");
-      if (event.dataTransfer) {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", `block:${block.id}`);
-      }
-    });
-    card.addEventListener("dragend", () => {
-      state.draggedBlockId = null;
-      card.classList.remove("dragging");
-      clearDropTargets();
-    });
-    card.addEventListener("dragenter", (event) => {
-      const payload = dragPayloadFromEvent(event);
-      if (!payload) {
-        return;
-      }
-      event.preventDefault();
-      const target = cardDropIndex(card, index, event);
-      clearDropTargets();
-      card.classList.add(target.position === "before" ? "drop-before" : "drop-after");
-      elements.pipelineCanvas.classList.add("drop-active");
-    });
-    card.addEventListener("dragover", (event) => {
-      const payload = dragPayloadFromEvent(event);
-      if (!payload) {
-        return;
-      }
-      event.preventDefault();
-      if (event.dataTransfer) {
-        event.dataTransfer.dropEffect = payload.kind === "block" ? "move" : "copy";
-      }
-      const target = cardDropIndex(card, index, event);
-      clearDropTargets();
-      card.classList.add(target.position === "before" ? "drop-before" : "drop-after");
-      elements.pipelineCanvas.classList.add("drop-active");
-    });
-    card.addEventListener("dragleave", (event) => {
-      if (event.relatedTarget && card.contains(event.relatedTarget)) {
-        return;
-      }
-      card.classList.remove("drop-before", "drop-after");
-      if (!elements.pipelineCanvas.querySelector(".drop-slot.active, .cell-card.drop-before, .cell-card.drop-after")) {
-        elements.pipelineCanvas.classList.remove("drop-active");
-      }
-    });
-    card.addEventListener("drop", (event) => {
-      const payload = dragPayloadFromEvent(event);
-      if (!payload) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      const target = cardDropIndex(card, index, event);
-      applyDropPayload(payload, target.index);
-    });
-
-    const shell = document.createElement("div");
-    shell.className = "cell-shell";
-
-    const main = document.createElement("div");
-    main.className = "cell-main";
-
-    const head = document.createElement("div");
-    head.className = "cell-head";
-    const headLead = document.createElement("div");
-    headLead.className = "cell-head-lead";
-    const runIconButton = document.createElement("button");
-    runIconButton.type = "button";
-    runIconButton.className = `cell-head-run ${blockRunning ? "running" : "idle"}`;
-    runIconButton.setAttribute("aria-label", blockRunning ? `Stop ${task.title} step` : `Run ${task.title} step`);
-    runIconButton.title = blockRunning ? "Stop step" : "Run step";
-    runIconButton.textContent = blockRunning ? "■" : "▶";
-    runIconButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      runSingleBlock(block);
-    });
-
-    const copy = document.createElement("div");
-    copy.className = "cell-head-copy";
-    const titleRow = document.createElement("div");
-    titleRow.className = "cell-title-row";
-    const indexBadge = document.createElement("span");
-    indexBadge.className = "cell-index-badge";
-    indexBadge.textContent = `#${index + 1}`;
-    const title = document.createElement("h3");
-    title.textContent = task.title;
-    titleRow.append(indexBadge, title);
-
-    const subtitle = document.createElement("p");
-    subtitle.textContent = task.summary;
-    copy.append(titleRow, subtitle);
-    headLead.append(runIconButton, copy);
-
-    const status = blockHealthState(task, block);
-    const statusPill = createMetaPill(status.label, status.tone);
-    statusPill.classList.add("cell-status-pill");
-    head.append(headLead, statusPill);
-    main.append(head);
-    main.append(renderBlockSummary(task, block));
-
-    if (block.ui?.showRuntime) {
-      main.append(renderBlockRuntime(block));
-    }
-
-    const footer = document.createElement("div");
-    footer.className = "cell-footer";
-
-    const primaryActions = document.createElement("div");
-    primaryActions.className = "cell-footer-actions";
-
-    const runtimeButton = document.createElement("button");
-    runtimeButton.type = "button";
-    runtimeButton.className = "ghost cell-action-button";
-    setButtonContent(runtimeButton, ">_", block.ui?.showRuntime ? "Hide Terminal" : "Show Terminal");
-    runtimeButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      block.ui = block.ui || {};
-      block.ui.showRuntime = !block.ui.showRuntime;
-      renderPipeline();
-    });
-
-    primaryActions.append(runtimeButton);
-
-    const secondaryActions = document.createElement("div");
-    secondaryActions.className = "cell-footer-actions cell-footer-actions-secondary";
-
-    const enableButton = document.createElement("button");
-    enableButton.type = "button";
-    enableButton.className = "ghost cell-action-button";
-    setButtonContent(enableButton, block.enabled ? "⊘" : "✓", block.enabled ? "Disable" : "Enable");
-    enableButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      block.enabled = !block.enabled;
-      renderPipeline();
-      renderInspector();
-      renderTopbar();
-    });
-
-    const moveUpButton = document.createElement("button");
-    moveUpButton.type = "button";
-    moveUpButton.className = "ghost cell-order-button";
-    moveUpButton.setAttribute("aria-label", `Move ${task.title} cell up`);
-    moveUpButton.title = "Move cell up";
-    moveUpButton.textContent = "↑";
-    moveUpButton.disabled = index === 0;
-    moveUpButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      moveBlock(index, index - 1);
-    });
-
-    const moveDownButton = document.createElement("button");
-    moveDownButton.type = "button";
-    moveDownButton.className = "ghost cell-order-button";
-    moveDownButton.setAttribute("aria-label", `Move ${task.title} cell down`);
-    moveDownButton.title = "Move cell down";
-    moveDownButton.textContent = "↓";
-    moveDownButton.disabled = index === state.blocks.length - 1;
-    moveDownButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      moveBlock(index, index + 1);
-    });
-
-    const removeButton = document.createElement("button");
-    removeButton.type = "button";
-    removeButton.className = "ghost cell-remove-icon cell-action-button";
-    removeButton.setAttribute("aria-label", `Remove ${task.title} cell`);
-    removeButton.title = "Remove cell";
-    setButtonContent(removeButton, "×", "Remove");
-    removeButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      removeBlock(block.id);
-    });
-
-    secondaryActions.append(enableButton, moveUpButton, moveDownButton, removeButton);
-    footer.append(primaryActions, secondaryActions);
-    main.append(footer);
-
-    shell.append(main);
-    card.append(shell);
-    elements.pipelineCanvas.append(card);
-    elements.pipelineCanvas.append(createDropSlot(index + 1));
+    const view = ensurePipelineCardView(block.id);
+    updatePipelineCardView(view, block, index);
+    nodes.push(view.card, createDropSlot(index + 1));
   });
+
+  replaceChildren(elements.pipelineCanvas, ...nodes);
 }
 
 function currentStage(run) {
@@ -2532,6 +2700,15 @@ async function refreshRunState() {
     if (!state.activeRun || !isRunnableRunStatus(state.activeRun.status)) {
       state.transientRunningBlockId = null;
     }
+    const nextRunRenderSignature = buildRunRenderSignature(
+      runs,
+      nextActiveRunId,
+      nextActiveRun,
+    );
+    if (nextRunRenderSignature === state.runRenderSignature) {
+      return;
+    }
+    state.runRenderSignature = nextRunRenderSignature;
     renderRunPanel();
     renderPipeline();
   });
