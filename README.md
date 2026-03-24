@@ -2,6 +2,8 @@
 
 **Workbench** is a notebook-style web UI for [STAMP](https://github.com/KatherLab/STAMP) that lets users compose drag-and-drop pathology pipelines, edit task-specific parameters in an inspector, import/export YAML configs, run stages step by step or end to end, and monitor per-cell runtime logs — without touching the CLI directly.
 
+![STAMP Workbench Overview](stamp_workbench/static/assets/workbench-overview.png)
+
 ---
 
 ## Requirements

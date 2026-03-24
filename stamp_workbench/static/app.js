@@ -18,6 +18,8 @@ const state = {
   draggedTaskSection: null,
   draggedBlockId: null,
   saveModalRestoreFocus: null,
+  sidebarView: "library",
+  sidebarQuery: "",
 };
 
 const elements = {
@@ -28,10 +30,15 @@ const elements = {
   environmentSummary: document.getElementById("environment-summary"),
   taskPalette: document.getElementById("task-palette"),
   templateList: document.getElementById("template-list"),
+  libraryPane: document.getElementById("library-pane"),
+  templatesPane: document.getElementById("templates-pane"),
+  configPane: document.getElementById("config-pane"),
+  sidebarViewButtons: Array.from(document.querySelectorAll("[data-sidebar-view]")),
   configFileInput: document.getElementById("config-file-input"),
   configDropzone: document.getElementById("config-dropzone"),
   loadConfigButton: document.getElementById("load-config-button"),
   saveButton: document.getElementById("save-button"),
+  reviewButton: document.getElementById("review-button"),
   inspectorSelection: document.getElementById("inspector-selection"),
   blockInspector: document.getElementById("block-inspector"),
   advancedConfig: document.getElementById("advanced-config"),
@@ -252,6 +259,63 @@ function runPillClass(status) {
   return "pill-idle";
 }
 
+function matchesSidebarQuery(...values) {
+  const query = state.sidebarQuery.trim().toLowerCase();
+  if (!query) {
+    return true;
+  }
+  return values
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(query));
+}
+
+function blockHealthState(task, block) {
+  const health = validateBlockLocally(task, block);
+  if (!block.enabled) {
+    return { label: "Disabled", tone: "warn", health };
+  }
+  if (isActiveRunForBlock(block)) {
+    return { label: "Running", tone: "info", health };
+  }
+  if (isPendingBlock(block)) {
+    return { label: "Waiting", tone: "warn", health };
+  }
+  if (health.ready) {
+    return { label: "Ready", tone: "good", health };
+  }
+  return { label: "Missing inputs", tone: "warn", health };
+}
+
+function highlightFieldNamesForSection(section) {
+  const shared = ["wsi_dir", "output_dir", "feat_dir", "feature_dir", "clini_table", "slide_table"];
+  const perSection = {
+    preprocessing: ["wsi_dir", "output_dir", "extractor", "device", "max_workers", "default_slide_mpp"],
+    slide_encoding: ["feat_dir", "output_dir", "encoder", "agg_feat_dir", "device"],
+    patient_encoding: ["feat_dir", "slide_table", "encoder", "task", "patient_label"],
+    training: ["output_dir", "feature_dir", "clini_table", "task", "ground_truth_label"],
+    crossval: ["output_dir", "feature_dir", "clini_table", "task", "ground_truth_label"],
+    deployment: ["output_dir", "feature_dir", "clini_table", "task", "ground_truth_label"],
+    statistics: ["output_dir", "clini_table", "ground_truth_label", "task"],
+    heatmaps: ["output_dir", "feature_dir", "wsi_dir", "checkpoint_path", "default_slide_mpp"],
+  };
+  return [...new Set([...(perSection[section] || []), ...shared])];
+}
+
+function summarizeBlockFields(task, block, limit = 5) {
+  const orderedNames = highlightFieldNamesForSection(block.section);
+  const orderedFields = orderedNames
+    .map((name) => task.fields.find((field) => field.name === name))
+    .filter(Boolean);
+  const seen = new Set(orderedFields.map((field) => field.name));
+  const fields = [
+    ...orderedFields,
+    ...task.fields.filter((field) => !seen.has(field.name) && hasDisplayValue(field, block.params[field.name])),
+  ];
+  return fields
+    .filter((field) => hasDisplayValue(field, block.params[field.name]))
+    .slice(0, limit);
+}
+
 function friendlyValue(field, value) {
   if (field.kind === "boolean") {
     return value ? "yes" : "no";
@@ -397,6 +461,18 @@ function createMetaPill(label, tone = "info") {
   pill.className = `meta-pill ${tone}`;
   pill.textContent = label;
   return pill;
+}
+
+function setButtonContent(button, icon, label, { spinning = false } = {}) {
+  replaceChildren(button);
+  const iconSpan = document.createElement("span");
+  iconSpan.className = `cell-action-icon${spinning ? " spinning" : ""}`;
+  iconSpan.textContent = icon;
+
+  const labelSpan = document.createElement("span");
+  labelSpan.textContent = label;
+
+  button.append(iconSpan, labelSpan);
 }
 
 function parseListInput(raw, presentation = "csv") {
@@ -866,6 +942,9 @@ function renderTopbar() {
 function renderTaskPalette() {
   replaceChildren(elements.taskPalette);
   for (const [section, task] of Object.entries(state.catalog.tasks)) {
+    if (!matchesSidebarQuery(task.title, task.summary, TASK_COMMANDS[section], section)) {
+      continue;
+    }
     const meta = TASK_META[section] || { icon: "◆", color: "#97aabd" };
     const card = document.createElement("article");
     card.className = "palette-card";
@@ -887,6 +966,16 @@ function renderTaskPalette() {
     const summary = document.createElement("p");
     summary.textContent = task.summary;
     body.append(title, summary);
+
+    const addButton = document.createElement("button");
+    addButton.type = "button";
+    addButton.className = "ghost palette-add";
+    addButton.setAttribute("aria-label", `Add ${task.title} task`);
+    addButton.textContent = "+";
+    addButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      addBlock(section);
+    });
 
     card.addEventListener("click", () => addBlock(section));
     card.addEventListener("keydown", (event) => {
@@ -910,14 +999,21 @@ function renderTaskPalette() {
       clearDropTargets();
     });
 
-    card.append(iconChip, body);
+    card.append(iconChip, body, addButton);
     elements.taskPalette.append(card);
+  }
+
+  if (!elements.taskPalette.children.length) {
+    elements.taskPalette.append(createMessageCard("No tasks match the current search.", "warning"));
   }
 }
 
 function renderTemplates() {
   replaceChildren(elements.templateList);
   for (const template of state.catalog.templates) {
+    if (!matchesSidebarQuery(template.title, template.description, ...(template.sections || []))) {
+      continue;
+    }
     const card = document.createElement("article");
     card.className = "template-card";
     const head = document.createElement("div");
@@ -938,6 +1034,29 @@ function renderTemplates() {
     card.append(head);
     elements.templateList.append(card);
   }
+
+  if (!elements.templateList.children.length) {
+    elements.templateList.append(createMessageCard("No templates match the current search.", "warning"));
+  }
+}
+
+function renderSidebarView() {
+  const views = {
+    library: elements.libraryPane,
+    templates: elements.templatesPane,
+    config: elements.configPane,
+  };
+
+  Object.entries(views).forEach(([view, pane]) => {
+    pane.hidden = view !== state.sidebarView;
+  });
+
+  elements.sidebarViewButtons.forEach((button) => {
+    const active = button.dataset.sidebarView === state.sidebarView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+
 }
 
 function renderAdvancedConfig() {
@@ -1013,14 +1132,63 @@ function renderWorkspaceSummary() {
   if (state.blocks.length === 0) {
     return;
   }
-  elements.workspaceSummary.append(
-    createMetaPill(`${state.blocks.length} cells`, "info"),
+
+  const overview = document.createElement("div");
+  overview.className = "workspace-overview";
+  const readyCount = state.blocks.filter((block) => {
+    const task = state.catalog.tasks[block.section];
+    return validateBlockLocally(task, block).ready;
+  }).length;
+
+  overview.append(
+    createMetaPill(`${state.blocks.length} cells in flow`, "info"),
     createMetaPill(`${state.blocks.filter((block) => block.enabled).length} active`, "good"),
-    createMetaPill(
-      state.blocks.map((block) => state.catalog.tasks[block.section].title).join(" -> "),
-      "info",
-    ),
+    createMetaPill(`${readyCount} ready`, readyCount === state.blocks.length ? "good" : "warn"),
   );
+
+  const rail = document.createElement("div");
+  rail.className = "pipeline-rail";
+
+  state.blocks.forEach((block, index) => {
+    const task = state.catalog.tasks[block.section];
+    const status = blockHealthState(task, block);
+    const meta = TASK_META[block.section] || { icon: "◆", color: "#97aabd" };
+
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `pipeline-chip ${block.id === state.selectedBlockId ? "active" : ""}`;
+    chip.addEventListener("click", () => {
+      state.selectedBlockId = block.id;
+      renderPipeline();
+      renderInspector();
+      chip.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+
+    const icon = document.createElement("span");
+    icon.className = "pipeline-chip-icon";
+    icon.textContent = meta.icon;
+    icon.style.setProperty("--task-color", meta.color);
+
+    const label = document.createElement("span");
+    label.className = "pipeline-chip-label";
+    label.textContent = task.title;
+
+    const statePill = document.createElement("span");
+    statePill.className = `pipeline-chip-state ${status.tone}`;
+    statePill.textContent = status.label;
+
+    chip.append(icon, label, statePill);
+    rail.append(chip);
+
+    if (index < state.blocks.length - 1) {
+      const arrow = document.createElement("span");
+      arrow.className = "pipeline-rail-arrow";
+      arrow.textContent = "→";
+      rail.append(arrow);
+    }
+  });
+
+  elements.workspaceSummary.append(overview, rail);
 }
 
 function renderWorkspaceMessage() {
@@ -1048,23 +1216,39 @@ function hasDisplayValue(field, value) {
 
 function renderBlockSummary(task, block) {
   const summary = document.createElement("div");
-  summary.className = "cell-summary";
-  const health = validateBlockLocally(task, block);
-  summary.append(createMetaPill(health.ready ? "Ready" : `Missing ${health.missing.length}`, health.ready ? "good" : "warn"));
-  const fields = task.fields
-    .filter((field) => {
-      return hasDisplayValue(field, block.params[field.name]);
-    })
-    .slice(0, 5);
+  summary.className = "cell-summary-stack";
 
+  const chips = document.createElement("div");
+  chips.className = "cell-summary";
+
+  const status = blockHealthState(task, block);
+  chips.append(createMetaPill(status.label, status.tone));
+
+  const fields = summarizeBlockFields(task, block);
   if (fields.length === 0) {
-    summary.append(createMetaPill("No parameters filled yet", "warn"));
-    return summary;
+    chips.append(createMetaPill("No parameters filled yet", "warn"));
+  } else {
+    for (const field of fields) {
+      chips.append(createMetaPill(`${field.label}: ${friendlyValue(field, block.params[field.name])}`, "info"));
+    }
   }
 
-  for (const field of fields) {
-    summary.append(createMetaPill(`${field.label}: ${friendlyValue(field, block.params[field.name])}`, "info"));
+  summary.append(chips);
+
+  const runtime = runtimeForBlock(block);
+  const footer = document.createElement("div");
+  footer.className = "cell-summary-subline";
+  if (runtime) {
+    footer.textContent = `${runtime.command} · ${runtime.status}`;
+  } else if (status.health.missing.length > 0) {
+    footer.textContent = `Missing: ${status.health.missing.join(", ")}`;
+  } else if (!block.enabled) {
+    footer.textContent = "This cell is disabled and will be skipped.";
+  } else {
+    footer.textContent = "Configured and ready for the active pipeline.";
   }
+  summary.append(footer);
+
   return summary;
 }
 
@@ -1163,6 +1347,30 @@ function showMissingInputAlert(errors, firstInvalidBlockId) {
   setTerminalMessage(`[workbench] Fill the missing required inputs before running.\n${errors.join("\n")}`);
 }
 
+function reviewPipelineInputs() {
+  const enabledBlocks = state.blocks.filter((block) => block.enabled);
+  if (!enabledBlocks.length) {
+    setTerminalMessage("[workbench] Add at least one enabled cell before reviewing the pipeline.");
+    return;
+  }
+
+  const { errors, firstInvalidBlockId } = collectMissingInputErrors(enabledBlocks);
+  if (errors.length) {
+    showMissingInputAlert(errors, firstInvalidBlockId);
+    return;
+  }
+
+  state.validation = {
+    valid: true,
+    errors: [],
+    warnings: [],
+    config_preview: state.validation?.config_preview || "",
+  };
+  renderPipeline();
+  renderInspector();
+  setTerminalMessage("[workbench] All enabled cells have the required inputs. The pipeline is ready to run.");
+}
+
 function renderInspector() {
   const block = selectedBlock();
   replaceChildren(elements.blockInspector);
@@ -1199,7 +1407,10 @@ function renderInspector() {
   leadText.className = "inspector-copy";
   leadText.textContent = task.summary;
   leadBody.append(leadTitle, leadText);
-  lead.append(leadIcon, leadBody);
+  const leadStatus = blockHealthState(task, block);
+  const leadBadge = createMetaPill(leadStatus.label, leadStatus.tone);
+  leadBadge.classList.add("inspector-lead-status");
+  lead.append(leadIcon, leadBody, leadBadge);
 
   const meta = document.createElement("div");
   meta.className = "meta-row";
@@ -1224,7 +1435,13 @@ function renderInspector() {
     renderInspector();
   });
 
-  toolbar.append(toggleButton);
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "ghost";
+  removeButton.textContent = "Remove Cell";
+  removeButton.addEventListener("click", () => removeBlock(block.id));
+
+  toolbar.append(toggleButton, removeButton);
 
   const visibleFields = task.fields.filter((field) => fieldVisibleForBlock(field, block));
   const grid = document.createElement("div");
@@ -1272,7 +1489,7 @@ function renderInspector() {
   const note = document.createElement("div");
   note.className = "inspector-note";
   note.textContent = health.ready
-    ? "This cell has its required inputs and is ready for pipeline validation."
+    ? "This cell is configured. Changes save automatically as you edit."
     : `Missing required inputs: ${health.missing.join(", ")}. Fill these fields before running the pipeline.`;
 
   stack.append(lead, meta, toolbar, grid, note);
@@ -1295,9 +1512,11 @@ function renderPipeline() {
     const blockRunning = isActiveRunForBlock(block);
     const blockPending = isPendingBlock(block);
     const blockDisabled = !block.enabled;
+    const taskMeta = TASK_META[block.section] || { icon: "◆", color: "#97aabd" };
     const card = document.createElement("article");
     card.className = `cell-card ${block.id === state.selectedBlockId ? "selected" : ""} ${blockPending ? "pending" : ""} ${blockDisabled ? "disabled" : ""}`;
     card.dataset.section = block.section;
+    card.style.setProperty("--task-color", taskMeta.color);
     card.tabIndex = 0;
     card.draggable = true;
 
@@ -1379,23 +1598,6 @@ function renderPipeline() {
     const shell = document.createElement("div");
     shell.className = "cell-shell";
 
-    const gutter = document.createElement("div");
-    gutter.className = "cell-index";
-    const quickRunButton = document.createElement("button");
-    quickRunButton.type = "button";
-    quickRunButton.className = `cell-run-icon ${blockRunning ? "running" : "idle"}`;
-    quickRunButton.setAttribute("aria-label", blockRunning ? `Terminate ${task.title} cell` : `Run ${task.title} cell`);
-    quickRunButton.title = blockRunning ? "Terminate this cell" : "Run this cell";
-    quickRunButton.textContent = blockRunning ? "■" : "▶";
-    quickRunButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      runSingleBlock(block);
-    });
-    const gutterIndex = document.createElement("div");
-    gutterIndex.className = "cell-gutter-index";
-    gutterIndex.textContent = `${index + 1}`;
-    gutter.append(quickRunButton, gutterIndex);
-
     const main = document.createElement("div");
     main.className = "cell-main";
 
@@ -1403,25 +1605,54 @@ function renderPipeline() {
     head.className = "cell-head";
     const headLead = document.createElement("div");
     headLead.className = "cell-head-lead";
-    const taskMeta = TASK_META[block.section] || { icon: "◆", color: "#97aabd" };
-    const iconChip = document.createElement("div");
-    iconChip.className = "cell-icon-chip";
-    iconChip.textContent = taskMeta.icon;
-    iconChip.style.setProperty("--task-color", taskMeta.color);
+    const runIconButton = document.createElement("button");
+    runIconButton.type = "button";
+    runIconButton.className = `cell-head-run ${blockRunning ? "running" : "idle"}`;
+    runIconButton.setAttribute("aria-label", blockRunning ? `Stop ${task.title} step` : `Run ${task.title} step`);
+    runIconButton.title = blockRunning ? "Stop step" : "Run step";
+    runIconButton.textContent = blockRunning ? "■" : "▶";
+    runIconButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      runSingleBlock(block);
+    });
+
     const copy = document.createElement("div");
     copy.className = "cell-head-copy";
+    const titleRow = document.createElement("div");
+    titleRow.className = "cell-title-row";
+    const indexBadge = document.createElement("span");
+    indexBadge.className = "cell-index-badge";
+    indexBadge.textContent = `#${index + 1}`;
     const title = document.createElement("h3");
     title.textContent = task.title;
-    copy.append(title);
-    headLead.append(iconChip, copy);
+    titleRow.append(indexBadge, title);
 
-    const headActions = document.createElement("div");
-    headActions.className = "cell-head-actions";
+    const subtitle = document.createElement("p");
+    subtitle.textContent = task.summary;
+    copy.append(titleRow, subtitle);
+    headLead.append(runIconButton, copy);
+
+    const status = blockHealthState(task, block);
+    const statusPill = createMetaPill(status.label, status.tone);
+    statusPill.classList.add("cell-status-pill");
+    head.append(headLead, statusPill);
+    main.append(head);
+    main.append(renderBlockSummary(task, block));
+
+    if (block.ui?.showRuntime) {
+      main.append(renderBlockRuntime(block));
+    }
+
+    const footer = document.createElement("div");
+    footer.className = "cell-footer";
+
+    const primaryActions = document.createElement("div");
+    primaryActions.className = "cell-footer-actions";
 
     const runtimeButton = document.createElement("button");
     runtimeButton.type = "button";
-    runtimeButton.className = "ghost cell-runtime-toggle";
-    runtimeButton.textContent = block.ui?.showRuntime ? "Hide Runtime" : "Show Runtime";
+    runtimeButton.className = "ghost cell-action-button";
+    setButtonContent(runtimeButton, ">_", block.ui?.showRuntime ? "Hide Terminal" : "Show Terminal");
     runtimeButton.addEventListener("click", (event) => {
       event.stopPropagation();
       block.ui = block.ui || {};
@@ -1429,31 +1660,21 @@ function renderPipeline() {
       renderPipeline();
     });
 
-    const enableLabel = document.createElement("label");
-    enableLabel.className = "cell-toggle";
-    const enableInput = document.createElement("input");
-    enableInput.type = "checkbox";
-    enableInput.checked = block.enabled;
-    enableInput.addEventListener("click", (event) => event.stopPropagation());
-    enableInput.addEventListener("change", () => {
-      block.enabled = enableInput.checked;
+    primaryActions.append(runtimeButton);
+
+    const secondaryActions = document.createElement("div");
+    secondaryActions.className = "cell-footer-actions cell-footer-actions-secondary";
+
+    const enableButton = document.createElement("button");
+    enableButton.type = "button";
+    enableButton.className = "ghost cell-action-button";
+    setButtonContent(enableButton, block.enabled ? "⊘" : "✓", block.enabled ? "Disable" : "Enable");
+    enableButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      block.enabled = !block.enabled;
       renderPipeline();
       renderInspector();
       renderTopbar();
-    });
-    const enableText = document.createElement("span");
-    enableText.textContent = "Enable";
-    enableLabel.append(enableInput, enableText);
-
-    const removeButton = document.createElement("button");
-    removeButton.type = "button";
-    removeButton.className = "ghost cell-remove-icon";
-    removeButton.setAttribute("aria-label", `Remove ${task.title} cell`);
-    removeButton.title = "Remove cell";
-    removeButton.textContent = "x";
-    removeButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      removeBlock(block.id);
     });
 
     const moveUpButton = document.createElement("button");
@@ -1480,19 +1701,22 @@ function renderPipeline() {
       moveBlock(index, index + 1);
     });
 
-    headActions.append(enableLabel, moveUpButton, moveDownButton, removeButton);
-    head.append(headLead, headActions);
-    main.append(head);
-    main.append(renderBlockSummary(task, block));
-    if (block.ui?.showRuntime) {
-      main.append(renderBlockRuntime(block));
-    }
-    const runtimeToggleRow = document.createElement("div");
-    runtimeToggleRow.className = "cell-runtime-toggle-row";
-    runtimeToggleRow.append(runtimeButton);
-    main.append(runtimeToggleRow);
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "ghost cell-remove-icon cell-action-button";
+    removeButton.setAttribute("aria-label", `Remove ${task.title} cell`);
+    removeButton.title = "Remove cell";
+    setButtonContent(removeButton, "×", "Remove");
+    removeButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      removeBlock(block.id);
+    });
 
-    shell.append(gutter, main);
+    secondaryActions.append(enableButton, moveUpButton, moveDownButton, removeButton);
+    footer.append(primaryActions, secondaryActions);
+    main.append(footer);
+
+    shell.append(main);
     card.append(shell);
     elements.pipelineCanvas.append(card);
     elements.pipelineCanvas.append(createDropSlot(index + 1));
@@ -1702,6 +1926,7 @@ function renderAll() {
   renderTopbar();
   renderTaskPalette();
   renderTemplates();
+  renderSidebarView();
   renderAdvancedConfig();
   renderWorkspaceMessage();
   renderPipeline();
@@ -1811,7 +2036,7 @@ function setSaveModalOpen(isOpen) {
 function openSaveModal() {
   const candidates = saveCandidates();
   if (candidates.length === 0) {
-    setTerminalMessage("[workbench] Add at least one cell before saving a config.");
+    setTerminalMessage("[workbench] Add at least one cell before exporting a config.");
     return;
   }
 
@@ -1903,7 +2128,7 @@ async function saveConfigFile() {
   }
 
   elements.saveConfirmButton.disabled = true;
-  setSaveModalMessage("Saving config...", "success");
+  setSaveModalMessage("Exporting config...", "success");
   try {
     const payload = await request("/api/export-config", {
       method: "POST",
@@ -1915,7 +2140,7 @@ async function saveConfigFile() {
       }),
     });
     const warningText = payload.warnings?.length ? `\n${payload.warnings.join("\n")}` : "";
-    setTerminalMessage(`[workbench] Saved config to ${payload.path}.${warningText}`);
+    setTerminalMessage(`[workbench] Exported config to ${payload.path}.${warningText}`);
     closeSaveModal();
   } catch (error) {
     setSaveModalMessage(error.message, "error");
@@ -2344,6 +2569,7 @@ function stopPolling() {
 
 function wireEvents() {
   elements.saveButton.addEventListener("click", () => openSaveModal());
+  elements.reviewButton.addEventListener("click", () => reviewPipelineInputs());
   elements.saveModalClose.addEventListener("click", () => closeSaveModal());
   elements.saveCancelButton.addEventListener("click", () => closeSaveModal());
   elements.saveConfirmButton.addEventListener("click", () => saveConfigFile());
@@ -2416,6 +2642,12 @@ function wireEvents() {
   });
   elements.runButton.addEventListener("click", () => handleRunAllButton());
   elements.themeToggle.addEventListener("click", () => toggleTheme());
+  elements.sidebarViewButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      state.sidebarView = button.dataset.sidebarView || "library";
+      renderSidebarView();
+    });
+  });
 }
 
 async function bootstrap() {

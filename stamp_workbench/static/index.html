@@ -17,12 +17,13 @@
   <header class="topbar">
     <div class="title brand-title">
       <img class="brand-logo" src="/assets/STAMP_logo.svg" alt="STAMP logo">
-      <div>
+      <div class="brand-copy">
         <h1>
           <span class="brand-word">STAMP</span>
-          <span class="brand-accent">Workbench</span>
+          <span class="brand-bars">|||</span>
+          <span class="brand-accent">WORKBENCH</span>
         </h1>
-        <p class="topbar-subhead">Workflow cells for preprocess, train, crossval, deploy, statistics, and heatmaps.</p>
+        <p class="topbar-subhead">Visual pipeline editor for preprocessing, training, cross-validation, deployment, statistics, and heatmaps.</p>
       </div>
     </div>
     <div class="topbar-meta">
@@ -36,39 +37,44 @@
     <section class="workbench" id="workbench">
       <aside class="panel panel-left">
         <div class="card panel-card sticky-card">
-          <div class="card-head">
+          <div class="sidebar-top">
             <div id="environment-summary" class="muted small"></div>
+            <div class="sidebar-switch" role="tablist" aria-label="Workbench library modes">
+              <button type="button" class="sidebar-switch-button active" data-sidebar-view="library" aria-pressed="true">Library</button>
+              <button type="button" class="sidebar-switch-button" data-sidebar-view="templates" aria-pressed="false">Templates</button>
+              <button type="button" class="sidebar-switch-button" data-sidebar-view="config" aria-pressed="false">Import</button>
+            </div>
           </div>
 
-          <section class="stack-section">
+          <section id="library-pane" class="stack-section sidebar-pane">
+            <div class="section-head">
+              <h3>Task Library</h3>
+              <div class="muted small">Click once to add a cell, or drag a task into the workspace.</div>
+            </div>
+            <div class="palette-guidance">Build pipelines one STAMP step at a time with richer cards and live inspector editing.</div>
+            <div id="task-palette" class="stack"></div>
+          </section>
+
+          <section id="templates-pane" class="stack-section sidebar-pane" hidden>
+            <div class="section-head">
+              <h3>Pipeline Templates</h3>
+              <div class="muted small">Ready-made starting points for common flows.</div>
+            </div>
+            <div id="template-list" class="stack"></div>
+          </section>
+
+          <section id="config-pane" class="stack-section sidebar-pane" hidden>
             <div class="section-head">
               <h3>Config Import</h3>
-              <div class="muted small">Drop or browse a STAMP config</div>
+              <div class="muted small">Load a STAMP YAML file into the current workspace.</div>
             </div>
             <input id="config-file-input" type="file" accept=".yaml,.yml,text/yaml,application/x-yaml" hidden>
             <div id="config-dropzone" class="config-dropzone section-content-gap" role="button" tabindex="0"
               aria-label="Upload config yaml">
-              <div class="config-drop-title">Drop `config.yaml` here</div>
-              <div class="config-drop-copy">or browse a `.yaml` / `.yml` file</div>
+              <div class="config-drop-title">Import `config.yaml`</div>
+              <div class="config-drop-copy">Hydrate the current workspace from an existing STAMP configuration file.</div>
               <button id="load-config-button" type="button" class="ghost config-drop-button">Browse File</button>
             </div>
-          </section>
-
-          <section class="stack-section">
-            <div class="section-head">
-              <h3>Task Library</h3>
-              <div class="muted small">Add one STAMP step at a time</div>
-            </div>
-            <div class="palette-guidance">Click once to add a cell, or drag a task into the center workspace.</div>
-            <div id="task-palette" class="stack"></div>
-          </section>
-
-          <section class="stack-section">
-            <div class="section-head">
-              <h3>Templates</h3>
-              <div class="muted small">Quick pipeline starters</div>
-            </div>
-            <div id="template-list" class="stack"></div>
           </section>
         </div>
       </aside>
@@ -82,14 +88,15 @@
             <div class="card-head workspace-head">
               <div>
                 <h2>Pipeline Workspace</h2>
-                <div class="muted small">Notebook-style cells in the center. Click a cell to edit it in the inspector on
-                  the right.</div>
+                <div class="muted small">Compose the run visually in the center, inspect one cell at a time on the right, and keep the active flow visible at a glance.</div>
               </div>
               <div class="workspace-actions action-bar">
                 <button id="save-button" type="button" class="ghost toolbar-button"><span
-                    class="button-icon">↓</span><span>Save</span></button>
+                    class="button-icon">↓</span><span>Export</span></button>
                 <button id="clear-button" type="button" class="ghost toolbar-button"><span
-                    class="button-icon">[]</span><span>Clear</span></button>
+                    class="button-icon">[]</span><span>Reset</span></button>
+                <button id="review-button" type="button" class="ghost toolbar-button"><span
+                    class="button-icon">✓</span><span>Review Inputs</span></button>
                 <button id="run-button" type="button" class="primary toolbar-button"><span
                     class="button-icon">▶</span><span>Run All</span></button>
               </div>
@@ -122,8 +129,10 @@
           </section>
 
           <section class="stack-section tight-section">
-            <div class="muted small section-content-gap">Used for training setup and model hyperparameters in train and
-              crossval cells.</div>
+            <div class="section-head">
+              <h3>Training Defaults</h3>
+              <div class="muted small">Shared setup for train and cross-validation cells.</div>
+            </div>
             <div id="advanced-config" class="field-grid inspector-field-grid"></div>
           </section>
 
@@ -144,7 +153,7 @@
     <section class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="save-modal-title">
       <div class="card-head">
         <div>
-          <h2 id="save-modal-title">Save Config</h2>
+          <h2 id="save-modal-title">Export Config</h2>
           <div class="muted small">Export selected pipeline sections as a STAMP YAML file.</div>
         </div>
         <button id="save-modal-close" type="button" class="ghost cell-remove-icon"
@@ -180,7 +189,7 @@
 
       <div class="modal-actions">
         <button id="save-cancel-button" type="button" class="ghost">Cancel</button>
-        <button id="save-confirm-button" type="button" class="primary">Save YAML</button>
+        <button id="save-confirm-button" type="button" class="primary">Export YAML</button>
       </div>
     </section>
   </div>
