@@ -8,7 +8,7 @@
 
 ## Requirements
 
-- [STAMP](https://github.com/KatherLab/STAMP) installed (≥ v2.5.0)
+- [STAMP](https://github.com/KatherLab/STAMP) installed (≥ v2.4.0)
 - Python ≥ 3.11
 
 ---
