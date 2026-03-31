@@ -26,7 +26,7 @@ uv sync --extra gpu          # or --extra cpu for CPU-only
 **2. Add the workbench** to the same environment:
 
 ```bash
-uv pip install git+https://github.com/KatherLab/STAMP-Workbench
+uv pip install git+https://github.com/mducducd/STAMP-Workbench
 ```
 
 **3. Launch:**
