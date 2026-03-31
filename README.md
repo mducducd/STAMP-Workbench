@@ -26,7 +26,7 @@ uv sync --extra gpu          # or --extra cpu for CPU-only
 **2. Add the workbench** to the same environment:
 
 ```bash
-uv pip install git+https://github.com/mducducd/STAMP-Workbench.git
+uv pip install git+https://github.com/KatherLab/STAMP-Workbench
 ```
 
 **3. Launch:**
@@ -65,7 +65,7 @@ stamp-workbench --host 127.0.0.1 --port 8010
 The recommended user flow remains:
 
 ```bash
-uv pip install git+https://github.com/mducducd/STAMP-Workbench.git
+uv pip install git+https://github.com/KatherLab/STAMP-Workbench.git
 stamp-workbench
 ```
 
