@@ -32,9 +32,9 @@ uv pip install git+https://github.com/mducducd/STAMP-Workbench.git
 **3. Launch:**
 
 ```bash
-stamp workbench
+stamp-workbench
 # or with custom host/port:
-stamp workbench --host 0.0.0.0 --port 8010
+stamp-workbench --host 0.0.0.0 --port 8010
 ```
 
 Then open the printed URL in your browser.
@@ -66,7 +66,7 @@ The recommended user flow remains:
 
 ```bash
 uv pip install git+https://github.com/mducducd/STAMP-Workbench.git
-stamp workbench
+stamp-workbench
 ```
 
 ---
