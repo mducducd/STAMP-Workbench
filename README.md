@@ -21,6 +21,7 @@
 git clone https://github.com/KatherLab/STAMP.git
 cd STAMP
 uv sync --extra gpu          # or --extra cpu for CPU-only
+source .ven/bin/activate     # activate env
 ```
 
 **2. Add the workbench** to the same environment:
